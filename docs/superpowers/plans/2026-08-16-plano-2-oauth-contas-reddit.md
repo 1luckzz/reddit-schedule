@@ -3155,7 +3155,7 @@ local do Supabase não existe lá). Um teste de banco fora dessa pasta quebra o 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { randomBytes } from 'node:crypto'
 import { adminClient, cleanupTestUsers, createTestUser } from './helpers'
-import { connectAccount } from '@/lib/reddit/connect-account'
+import { AccountTakenError, connectAccount } from '@/lib/reddit/connect-account'
 
 let userA: { id: string; accessToken: string }
 
@@ -3263,6 +3263,32 @@ describe('connectAccount', () => {
     expect(data!.last_error).toBeNull()
   })
 
+  it('recusa conectar identidade Reddit já usada por outro usuário do painel', async () => {
+    const outro = await createTestUser(`ca-outro-${Date.now()}@teste.local`)
+    try {
+      await connectAccount(userA.id, token, { id: 't2_disputada', name: 'x' })
+      await expect(
+        connectAccount(outro.id, token, { id: 't2_disputada', name: 'x' }),
+      ).rejects.toBeInstanceOf(AccountTakenError)
+
+      // E a conta continua com o dono original.
+      const { data } = await adminClient()
+        .from('reddit_accounts')
+        .select('owner_id')
+        .eq('reddit_user_id', 't2_disputada')
+        .single()
+      expect(data!.owner_id).toBe(userA.id)
+    } finally {
+      await cleanupTestUsers([outro.id])
+    }
+  })
+
+  it('a mensagem de conta em uso não revela quem a conectou', async () => {
+    const erro = new AccountTakenError()
+    expect(erro.message).not.toContain('@')
+    expect(erro.message).toMatch(/outro usuário/i)
+  })
+
   it('os escopos vêm da resposta do Reddit, não de uma lista fixa', async () => {
     const id = await connectAccount(
       userA.id,
@@ -3293,9 +3319,21 @@ import { createAdminSupabase } from '@/lib/supabase/admin'
 import { encryptSecret } from '@/lib/crypto/aes-gcm'
 import type { RedditIdentity, RedditTokenResponse } from './types'
 
+export class AccountTakenError extends Error {
+  constructor() {
+    // Não revela QUEM conectou: isso vazaria informação entre usuários.
+    super('Esta conta Reddit já está conectada em outro usuário do painel.')
+    this.name = 'AccountTakenError'
+  }
+}
+
 /**
- * Cria ou reconecta uma conta Reddit. Idempotente por (owner, reddit_user_id):
+ * Cria ou reconecta uma conta Reddit. Idempotente por identidade Reddit:
  * reconectar a mesma conta atualiza a linha existente em vez de duplicar.
+ *
+ * `reddit_user_id` é único globalmente, então NÃO se pode usar upsert cego
+ * aqui: um upsert por reddit_user_id sobrescreveria o `owner_id` e transferiria
+ * a conta de um usuário do painel para outro. A verificação de dono vem antes.
  */
 export async function connectAccount(
   ownerId: string,
@@ -3304,22 +3342,34 @@ export async function connectAccount(
 ): Promise<string> {
   const admin = createAdminSupabase()
 
-  const { data: conta, error } = await admin
+  const { data: existente } = await admin
     .from('reddit_accounts')
-    .upsert(
-      {
-        owner_id: ownerId,
-        reddit_user_id: identity.id,
-        username: identity.name,
-        scopes: token.scope.split(' ').filter(Boolean),
-        status: 'connected',
-        last_error: null,
-        last_authenticated_at: new Date().toISOString(),
-      },
-      { onConflict: 'owner_id,reddit_user_id' },
-    )
-    .select('id')
-    .single()
+    .select('id, owner_id')
+    .eq('reddit_user_id', identity.id)
+    .maybeSingle()
+
+  if (existente && existente.owner_id !== ownerId) {
+    throw new AccountTakenError()
+  }
+
+  const patch = {
+    owner_id: ownerId,
+    reddit_user_id: identity.id,
+    username: identity.name,
+    scopes: token.scope.split(' ').filter(Boolean),
+    status: 'connected',
+    last_error: null,
+    last_authenticated_at: new Date().toISOString(),
+  }
+
+  const { data: conta, error } = existente
+    ? await admin
+        .from('reddit_accounts')
+        .update(patch)
+        .eq('id', existente.id)
+        .select('id')
+        .single()
+    : await admin.from('reddit_accounts').insert(patch).select('id').single()
 
   if (error || !conta) throw error ?? new Error('Falha ao gravar a conta.')
 
@@ -3397,7 +3447,7 @@ import {
   fetchIdentity,
   STATE_COOKIE,
 } from '@/lib/reddit/auth'
-import { connectAccount } from '@/lib/reddit/connect-account'
+import { AccountTakenError, connectAccount } from '@/lib/reddit/connect-account'
 import { getCoreEnv } from '@/lib/config/env'
 import { sanitize } from '@/lib/logging/sanitize'
 
@@ -3448,6 +3498,9 @@ export async function GET(request: NextRequest) {
     await connectAccount(user.id, token, identity)
     return back(base)
   } catch (e) {
+    if (e instanceof AccountTakenError) {
+      return back(base, 'conta_em_uso')
+    }
     console.error('reddit/callback', sanitize(e))
     return back(base, 'falha_ao_conectar')
   }
@@ -4016,6 +4069,8 @@ const MENSAGENS: Record<string, string> = {
   state_invalido:
     'A solicitação expirou ou já foi usada. Tente conectar a conta novamente.',
   autorizacao_recusada: 'A autorização foi recusada no Reddit.',
+  conta_em_uso:
+    'Esta conta Reddit já está conectada em outro usuário do painel.',
   falha_ao_conectar:
     'Não foi possível concluir a conexão com o Reddit. Tente novamente.',
 }
