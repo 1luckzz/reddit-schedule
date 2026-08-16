@@ -1,36 +1,105 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Reddit Post Scheduler
 
-## Getting Started
+Painel privado para agendar e publicar automaticamente no Reddit, usando
+exclusivamente a API e o OAuth oficiais.
 
-First, run the development server:
+- Design: [`docs/superpowers/specs/2026-08-16-reddit-post-scheduler-design.md`](docs/superpowers/specs/2026-08-16-reddit-post-scheduler-design.md)
+- Plano em execução: [`docs/superpowers/plans/2026-08-16-plano-1-fundacao-e-auth.md`](docs/superpowers/plans/2026-08-16-plano-1-fundacao-e-auth.md)
+
+## Fase -1: acesso à Reddit Data API
+
+Antes de qualquer configuração da aplicação:
+
+1. Garanta que você possui acesso permitido à Reddit Data API, sob os termos
+   vigentes do Reddit para o seu tipo de uso.
+2. Crie e configure o app OAuth conforme as regras atuais do Reddit,
+   escolhendo o tipo **web app**.
+3. Obtenha o `client_id`.
+4. Obtenha o `client_secret`.
+5. Configure o redirect URI de desenvolvimento:
+   `http://localhost:3000/api/reddit/callback`
+6. Configure o redirect URI de produção:
+   `https://<seu-dominio>/api/reddit/callback`
+7. Preencha `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET`, `REDDIT_REDIRECT_URI` e
+   `REDDIT_USER_AGENT` no `.env.local`.
+
+> **Importante:** criar uma entrada em `/prefs/apps` **não** implica acesso
+> irrestrito. O nível de acesso, os limites de uso e a elegibilidade são
+> determinados pelo Reddit sob os termos da Data API, podem exigir aprovação
+> conforme o caso de uso e podem mudar. Esta aplicação usa exclusivamente
+> API/OAuth oficiais e respeita esses termos e limites. Nenhum mecanismo de
+> bypass de rate limit, bloqueio, CAPTCHA ou ban será adicionado.
+
+O `REDDIT_USER_AGENT` é obrigatório pela API e segue o formato
+`web:reddit-scheduler:0.1.0 (by /u/SEU_USUARIO)`.
+
+## Configurar o Supabase
+
+Requer Docker Desktop em execução.
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npx supabase init      # apenas na primeira vez
+npx supabase start
+npx supabase status    # copie as chaves para o .env.local
+npx supabase db reset  # aplica todas as migrations
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+`npx supabase status` imprime a URL da API, a publishable key e a secret key.
+A secret key **nunca** deve receber prefixo `NEXT_PUBLIC_`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Ao escrever o `.env.local` no Windows, garanta que o arquivo fique **sem BOM** —
+o `Set-Content -Encoding utf8` do PowerShell 5.1 adiciona BOM e corrompe a
+primeira variável do arquivo.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Rodar
 
-## Learn More
+```bash
+cp .env.example .env.local   # e preencha os valores
+npm install
+npm run dev
+```
 
-To learn more about Next.js, take a look at the following resources:
+Gere a chave de criptografia com:
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Verificação
 
-## Deploy on Vercel
+```bash
+npm run verify   # lint + typecheck + testes + npm audit
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Os testes de integração exigem o stack local do Supabase no ar
+(`npx supabase start`). Para rodar apenas os testes que não tocam no banco:
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```bash
+npm test -- --exclude "tests/db/**"
+```
+
+`npm audit` cobre apenas vulnerabilidades já publicadas em advisory. É um piso
+de segurança, não prova de ausência de vulnerabilidades.
+
+## Decisões de segurança já implementadas
+
+- Tokens e credenciais são cifrados em **AES-256-GCM** com AAD ligado ao
+  contexto, de modo que um segredo movido para outra conta não decifra.
+- Logs passam por sanitização que remove tokens, senhas, header `Authorization`,
+  cookies e credenciais embutidas em URL de proxy.
+- Toda tabela tem **RLS** por dono, com `grant` explícito — RLS decide *quais
+  linhas*, grants decidem *se a tabela é alcançável*.
+- Sessão validada com `getClaims()`, que confere a assinatura do JWT contra as
+  chaves públicas do projeto. `getSession()` não é usado em código de servidor.
+
+## Estado atual
+
+**Plano 1 concluído:** autenticação do painel, banco com RLS, criptografia e
+sanitização de logs. As demais funcionalidades chegam nos Planos 2 a 5:
+
+| Plano | Escopo |
+|---|---|
+| 2 | OAuth do Reddit, contas, configuração de rede por conta |
+| 3 | Comunidades, flairs, requisitos de publicação |
+| 4 | Criar e agendar publicações, comentários programados |
+| 5 | Worker de publicação, calendário, fila, histórico |
