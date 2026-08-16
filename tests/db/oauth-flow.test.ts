@@ -75,13 +75,22 @@ describe('state do OAuth', () => {
   it('a mensagem de erro é a mesma para todos os motivos', async () => {
     // Não informa a quem tenta adivinhar se o state existia, expirou ou era
     // de outra sessão.
-    const inexistente = await consumeOAuthState('nao-existe', userA.id).catch(
-      (e) => e as Error,
+    async function mensagemDeErro(fn: () => Promise<void>): Promise<string> {
+      try {
+        await fn()
+        throw new Error('deveria ter lançado')
+      } catch (e) {
+        return (e as Error).message
+      }
+    }
+
+    const inexistente = await mensagemDeErro(() =>
+      consumeOAuthState('nao-existe', userA.id),
     )
     const { value } = await createOAuthState(userA.id)
-    const outraSessao = await consumeOAuthState(value, userB.id).catch(
-      (e) => e as Error,
+    const outraSessao = await mensagemDeErro(() =>
+      consumeOAuthState(value, userB.id),
     )
-    expect(inexistente.message).toBe(outraSessao.message)
+    expect(inexistente).toBe(outraSessao)
   })
 })
