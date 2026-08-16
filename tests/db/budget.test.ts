@@ -1,13 +1,23 @@
 import { beforeEach, describe, expect, it } from 'vitest'
+import { createHash } from 'node:crypto'
 import { adminClient } from './helpers'
 import { withSql } from './sql'
 
+// O orçamento é global por client_id, e o Vitest roda arquivos em paralelo.
+// Cada arquivo precisa do seu próprio client_id — e só pode apagar a própria
+// linha, senão zera o orçamento que outro arquivo acabou de semear.
+const CLIENT_ID = 'cid-suite-budget'
+const HASH = createHash('sha256').update(CLIENT_ID).digest('hex')
+
 beforeEach(async () => {
-  process.env.REDDIT_CLIENT_ID = 'cid-fake-budget'
+  process.env.REDDIT_CLIENT_ID = CLIENT_ID
   process.env.REDDIT_CLIENT_SECRET = 'csecret-fake'
   process.env.REDDIT_REDIRECT_URI = 'http://localhost:3000/api/reddit/callback'
   process.env.REDDIT_USER_AGENT = 'web:reddit-scheduler:test (by /u/teste)'
-  await adminClient().from('reddit_api_budget').delete().neq('client_id_hash', '')
+  await adminClient()
+    .from('reddit_api_budget')
+    .delete()
+    .eq('client_id_hash', HASH)
 })
 
 async function semearOrcamento(remaining: number, resetSeconds = 300) {
@@ -36,8 +46,9 @@ describe('reconciliação do orçamento', () => {
     const { data } = await adminClient()
       .from('reddit_api_budget')
       .select('client_id_hash')
+      .eq('client_id_hash', HASH)
       .single()
-    expect(data!.client_id_hash).not.toContain('cid-fake-budget')
+    expect(data!.client_id_hash).not.toContain(CLIENT_ID)
     expect(data!.client_id_hash).toHaveLength(64)
   })
 
@@ -93,11 +104,9 @@ describe('reserva atômica', () => {
 
   it('volta a permitir quando a janela expira', async () => {
     const { reserveBudget, getBudget } = await import('@/lib/reddit/budget')
-    const { createHash } = await import('node:crypto')
-    const hash = createHash('sha256').update('cid-fake-budget').digest('hex')
 
     await adminClient().from('reddit_api_budget').upsert({
-      client_id_hash: hash,
+      client_id_hash: HASH,
       used: 100,
       remaining: 0,
       reserved: 5,
