@@ -117,14 +117,47 @@ alterar o comportamento sem constar como breaking change. O teste de travessia
 existe justamente para detectar isso — se quebrar, o protocolo sai da lista em
 `src/lib/reddit/proxy-support.ts` em vez de continuar sendo oferecido.
 
+## Verificação pendente
+
+Uma etapa do Plano 2 **não pôde ser executada** e continua em aberto:
+
+- [ ] **Fluxo OAuth de ponta a ponta com o Reddit real.** Requer
+      `REDDIT_CLIENT_ID` e `REDDIT_CLIENT_SECRET` preenchidos no `.env.local`
+      (ver Fase -1). Roteiro:
+      1. `npm run dev`, entrar no painel e acessar **Conectar conta**;
+      2. autorizar no Reddit e confirmar o retorno a `/dashboard/accounts`
+         sem erro na query string;
+      3. conferir que a conta aparece com status **Conectada**;
+      4. recarregar a URL de callback (F5) e confirmar a mensagem de
+         solicitação expirada — o `state` é de uso único;
+      5. conferir no banco que os tokens estão cifrados:
+         `select left(access_token_enc, 3) from public.reddit_account_secrets;`
+         deve devolver `v1.`, nunca um token legível.
+
+Todo o resto do Plano 2 está coberto por testes automatizados, que rodam sem
+credenciais reais: a API do Reddit é simulada com `undici.MockAgent`.
+
 ## Estado atual
 
-**Plano 1 concluído:** autenticação do painel, banco com RLS, criptografia e
-sanitização de logs. As demais funcionalidades chegam nos Planos 2 a 5:
+**Planos 1 e 2 concluídos:** autenticação do painel, banco com RLS,
+criptografia, sanitização de logs, OAuth do Reddit, gestão de contas e
+configuração de rede por conta. As demais funcionalidades chegam nos Planos
+3 a 5:
 
 | Plano | Escopo |
 |---|---|
-| 2 | OAuth do Reddit, contas, configuração de rede por conta |
 | 3 | Comunidades, flairs, requisitos de publicação |
 | 4 | Criar e agendar publicações, comentários programados |
 | 5 | Worker de publicação, calendário, fila, histórico |
+
+## Proteção de processo
+
+Um hook de pre-commit (`.githooks/pre-commit`, instalado por `npm install` via
+`prepare`) bloqueia commits com a verificação quebrada:
+
+- sempre: `lint`, `typecheck` e a suíte sem banco — os mesmos passos do CI,
+  poucos segundos, sem exigir Docker;
+- condicionalmente: os testes de banco, **apenas** quando o Supabase local
+  responde, para não travar quem está sem o stack no ar.
+
+Para pular deliberadamente (WIP, rebase): `git commit --no-verify`.
