@@ -146,16 +146,44 @@ credenciais reais: a API do Reddit é simulada com `undici.MockAgent`.
 
 ## Estado atual
 
-**Planos 1, 2 e 3 concluídos:** autenticação do painel, banco com RLS,
+**Planos 1 a 4 concluídos:** autenticação do painel, banco com RLS,
 criptografia, sanitização de logs, OAuth do Reddit, gestão de contas,
 configuração de rede por conta, sincronização das comunidades moderadas,
-leitura de flairs e de requisitos de publicação, e orçamento global de rate
-limit. As demais funcionalidades chegam nos Planos 4 e 5:
+leitura de flairs e de requisitos de publicação, orçamento global de rate
+limit, e agendamento de publicações com comentário automático. Falta o
+Plano 5:
 
 | Plano | Escopo |
 |---|---|
-| 4 | Criar e agendar publicações, comentários programados |
 | 5 | Worker de publicação, calendário, fila, histórico, revisão |
+
+### Decisões do Plano 4
+
+- **Link e texto na mesma publicação é impossível na API do Reddit.** Quando o
+  usuário fornece os dois, o texto vira comentário automático — usando
+  endpoint oficial, e apenas com confirmação explícita no formulário.
+- **Horário inexistente por horário de verão é recusado**, nunca deslocado em
+  silêncio: publicar uma hora depois do combinado sem avisar seria pior que
+  pedir outro horário. Horário que ocorre duas vezes exige escolha explícita,
+  com o offset de cada opção — o algoritmo não pressupõe transição de uma
+  hora, então funciona em fusos como Lord Howe, que muda 30 minutos.
+- **As tabelas de agendamento são somente leitura pelo Data API.**
+  `authenticated` tem apenas `SELECT`; criar, reagendar e cancelar passam por
+  RPCs que só o `service_role` executa. Isso existe porque a validação de
+  `post_requirements` depende de uma chamada externa ao Reddit e não pode ser
+  reproduzida dentro do SQL — sem essa restrição, o cliente agendaria sem ela.
+- **O dono de uma publicação vem sempre de `requireUser()`**, nunca de campo
+  de formulário. As RPCs recebem o owner já verificado e revalidam que conta e
+  comunidade pertencem a ele, porque `service_role` ignora RLS.
+- **Publicação e comentário nascem na mesma transação.** Dois inserts
+  sequenciais deixariam um post órfão se o segundo falhasse, e o worker
+  publicaria sem o comentário pedido.
+- **A máquina de estados vive em triggers**: `needs_review` não volta para a
+  fila, `published` e `cancelled` são terminais, e `processing` só retorna à
+  fila quando o envio comprovadamente não saiu.
+- **Comentário com horário absoluto já vencido não é descartado.** Se a fila
+  atrasar, o comentário fica elegível logo após a publicação — o usuário
+  pediu "às 15h", e publicar às 15h30 não torna o comentário indesejado.
 
 ### Decisões do Plano 3
 
