@@ -22,7 +22,8 @@ Valem para toda task. As do Plano 1 continuam valendo integralmente; estas se so
 - **Nenhuma requisição real ao Reddit em teste.** Um teste que dependa de rede externa é um teste quebrado.
 - **Tabelas de segredo** (`reddit_account_secrets`, `reddit_account_network_configs`, `oauth_states`): RLS habilitada, zero policies, `revoke all` explícito de `anon` e `authenticated`.
 - **Grants são obrigatórios e explícitos** em toda tabela nova alcançável pelo cliente — RLS decide quais linhas, grant decide se a tabela é alcançável (lição da Task 5 do Plano 1).
-- **`service_role` só depois de verificar posse.** Toda função que lê segredo recebe `VerifiedAccount`, nunca `string`.
+- **`service_role` só depois de verificar posse.** Toda função que lê segredo recebe `VerifiedAccount`, nunca `string`. A marca de tipo é ergonomia, não fronteira: a garantia vem da checagem de posse em runtime, da RLS, das constraints e dos testes A/B.
+- **Prova de criptografia nunca é o prefixo do envelope.** Um teste que só confere `v1.` passaria com o texto claro concatenado. Todo teste de segredo verifica: valor armazenado difere do claro, não contém o claro (nem em base64 ou hex), e o decrypt devolve o original.
 - **Criptografia:** `encryptSecret(valor, aad)` com AAD no formato `<tabela>:<coluna>:<reddit_account_id>`.
 - **`fetch` e `ProxyAgent` sempre da dependência `undici` instalada**, nunca do `fetch` global do Node.
 - **Route handlers que falam com o Reddit declaram `export const runtime = 'nodejs'`** — o `ProxyAgent` não existe no runtime Edge.
@@ -763,6 +764,7 @@ git commit -m "feat: tabela de oauth states com consumo atomico"
 **Files:**
 - Create: `src/lib/auth/ownership.ts`
 - Test: `tests/auth/ownership.test.ts`
+- Test: `tests/db/ownership-runtime.test.ts`
 
 **Interfaces:**
 - Consumes: `requireUser()`, `createServerSupabase()`, `createAdminSupabase()`, `decryptSecret()`
@@ -773,7 +775,27 @@ git commit -m "feat: tabela de oauth states com consumo atomico"
   - `getNetworkConfig(account: VerifiedAccount): Promise<NetworkConfig | null>`
   - `class ForbiddenError extends Error`
 
-A marca de tipo é o ponto central: `getAccountSecrets` não aceita `string`, então um IDOR por troca de UUID deixa de compilar em vez de depender de alguém lembrar da checagem.
+**O que a marca de tipo é e o que ela não é.** `VerifiedAccount` é defesa de
+engenharia e ergonomia: torna difícil chamar `getAccountSecrets` sem antes
+passar por `assertAccountAccess`, e faz o descuido aparecer na revisão. Ela
+**não** é fronteira de segurança — tipos do TypeScript desaparecem em tempo de
+execução, um `as never` ou um cast qualquer a contorna, e nada disso chega ao
+banco.
+
+A garantia real vem de quatro camadas independentes, todas em runtime:
+
+1. **Validação de posse em runtime** dentro de `assertAccountAccess`, que
+   compara `owner_id` com o usuário da sessão;
+2. **RLS** por `owner_id` em `reddit_accounts`, mais ausência de policy e de
+   grant nas tabelas de segredo;
+3. **Constraints e FKs compostas** que impedem, no próprio banco, misturar
+   recursos de owners diferentes;
+4. **Testes A/B** com dois usuários reais tentando alcançar os dados um do
+   outro.
+
+Se a marca de tipo for removida amanhã, nenhuma dessas quatro camadas se
+enfraquece. É por isso que os testes desta task verificam a checagem de
+runtime, e não apenas a assinatura.
 
 - [ ] **Step 1: Escrever o teste falhando**
 
@@ -806,12 +828,123 @@ describe('ownership', () => {
       "import 'server-only'",
     )
   })
+
+  it('compara owner_id em runtime, não só confia na RLS', () => {
+    const source = readFileSync('src/lib/auth/ownership.ts', 'utf8')
+    expect(source).toMatch(/owner_id\s*!==\s*user\.id/)
+  })
+})
+```
+
+```ts
+// tests/db/ownership-runtime.test.ts
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import { createClient } from '@supabase/supabase-js'
+import { adminClient, cleanupTestUsers, createTestUser } from './helpers'
+
+let userA: { id: string; accessToken: string }
+let userB: { id: string; accessToken: string }
+let contaB: string
+
+// Sessão e client são injetados: é assertAccountAccess que está sob teste,
+// não o Next.
+const sessao = { id: '' }
+const clientToken = { value: '' }
+
+vi.mock('@/lib/auth/require-user', () => ({
+  requireUser: async () => ({ id: sessao.id, email: 'x@teste.local' }),
+  UnauthenticatedError: class extends Error {},
+}))
+
+vi.mock('@/lib/supabase/server', () => ({
+  createServerSupabase: async () =>
+    createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!,
+      {
+        auth: { persistSession: false, autoRefreshToken: false },
+        global: {
+          headers: { Authorization: `Bearer ${clientToken.value}` },
+        },
+      },
+    ),
+}))
+
+beforeAll(async () => {
+  const stamp = Date.now()
+  userA = await createTestUser(`or-a-${stamp}@teste.local`)
+  userB = await createTestUser(`or-b-${stamp}@teste.local`)
+
+  const { data } = await adminClient()
+    .from('reddit_accounts')
+    .insert({
+      owner_id: userB.id,
+      reddit_user_id: `t2_or_${stamp}`,
+      username: 'conta_do_b',
+    })
+    .select('id')
+    .single()
+  contaB = data!.id as string
+})
+
+afterAll(async () => {
+  await cleanupTestUsers([userA.id, userB.id])
+})
+
+describe('assertAccountAccess em runtime', () => {
+  it('recusa quando o usuário A pede a conta de B', async () => {
+    sessao.id = userA.id
+    clientToken.value = userA.accessToken
+
+    const { assertAccountAccess, ForbiddenError } = await import(
+      '@/lib/auth/ownership'
+    )
+    await expect(assertAccountAccess(contaB)).rejects.toBeInstanceOf(
+      ForbiddenError,
+    )
+  })
+
+  it('recusa mesmo se a RLS devolvesse a linha (defesa independente)', async () => {
+    // Sessão diz que é A, mas o client enxerga como B: simula uma policy
+    // afrouxada por engano. A comparação explícita de owner_id precisa barrar.
+    sessao.id = userA.id
+    clientToken.value = userB.accessToken
+
+    const { assertAccountAccess, ForbiddenError } = await import(
+      '@/lib/auth/ownership'
+    )
+    await expect(assertAccountAccess(contaB)).rejects.toBeInstanceOf(
+      ForbiddenError,
+    )
+  })
+
+  it('aceita quando sessão e posse coincidem', async () => {
+    sessao.id = userB.id
+    clientToken.value = userB.accessToken
+
+    const { assertAccountAccess } = await import('@/lib/auth/ownership')
+    const conta = await assertAccountAccess(contaB)
+    expect(conta.id).toBe(contaB)
+    expect(conta.owner_id).toBe(userB.id)
+  })
+
+  it('recusa id inexistente', async () => {
+    sessao.id = userB.id
+    clientToken.value = userB.accessToken
+
+    const { assertAccountAccess, ForbiddenError } = await import(
+      '@/lib/auth/ownership'
+    )
+    await expect(
+      assertAccountAccess('3f2504e0-4f89-11d3-9a0c-0305e82c3301'),
+    ).rejects.toBeInstanceOf(ForbiddenError)
+  })
 })
 ```
 
 - [ ] **Step 2: Rodar e ver falhar**
 
-Run: `npx vitest run tests/auth/ownership.test.ts`
+Run: `npx vitest run tests/auth/ownership.test.ts tests/db/ownership-runtime.test.ts`
 Expected: FAIL — arquivo inexistente.
 
 - [ ] **Step 3: Implementar**
@@ -952,8 +1085,8 @@ export async function getNetworkConfig(
 
 - [ ] **Step 4: Rodar e ver passar**
 
-Run: `npx vitest run tests/auth/ownership.test.ts`
-Expected: PASS (3 testes)
+Run: `npx vitest run tests/auth/ownership.test.ts tests/db/ownership-runtime.test.ts`
+Expected: PASS
 
 - [ ] **Step 5: Verificar e commitar**
 
@@ -2441,9 +2574,65 @@ describe('refresh automático', () => {
       .eq('reddit_account_id', accountId)
       .single()
 
-    // Persistido cifrado, nunca em claro.
-    expect(data!.access_token_enc).not.toContain('AT-NOVO')
-    expect(data!.access_token_enc.startsWith('v1.')).toBe(true)
+    const armazenado = data!.access_token_enc
+
+    // O prefixo v1. diz apenas qual é o formato do envelope — sozinho ele não
+    // prova cifragem nenhuma. As três verificações abaixo é que provam:
+    // 1. o valor armazenado difere do texto claro;
+    expect(armazenado).not.toBe('AT-NOVO')
+    // 2. o texto claro não aparece em lugar nenhum do valor armazenado,
+    //    nem em base64, nem em hex;
+    expect(armazenado).not.toContain('AT-NOVO')
+    expect(armazenado).not.toContain(Buffer.from('AT-NOVO').toString('base64'))
+    expect(armazenado).not.toContain(
+      Buffer.from('AT-NOVO').toString('base64url'),
+    )
+    expect(armazenado).not.toContain(Buffer.from('AT-NOVO').toString('hex'))
+    // 3. e o decrypt no servidor recupera exatamente o valor original.
+    const { decryptSecret } = await import('@/lib/crypto/aes-gcm')
+    expect(
+      decryptSecret(
+        armazenado,
+        `reddit_account_secrets:access_token:${accountId}`,
+      ),
+    ).toBe('AT-NOVO')
+  })
+
+  it('o refresh token guardado também é recuperável e nunca fica em claro', async () => {
+    accountId = await seedAccount(3600_000)
+
+    const { data } = await adminClient()
+      .from('reddit_account_secrets')
+      .select('refresh_token_enc')
+      .eq('reddit_account_id', accountId)
+      .single()
+
+    const armazenado = data!.refresh_token_enc
+    expect(armazenado).not.toBe('RT-1')
+    expect(armazenado).not.toContain('RT-1')
+
+    const { decryptSecret } = await import('@/lib/crypto/aes-gcm')
+    expect(
+      decryptSecret(
+        armazenado,
+        `reddit_account_secrets:refresh_token:${accountId}`,
+      ),
+    ).toBe('RT-1')
+  })
+
+  it('o mesmo valor cifrado duas vezes produz registros diferentes', async () => {
+    // Se dois tokens iguais gerassem o mesmo ciphertext, um observador do
+    // banco saberia que duas contas compartilham credencial.
+    const a = await seedAccount(3600_000)
+    const b = await seedAccount(3600_000)
+
+    const leitura = await adminClient()
+      .from('reddit_account_secrets')
+      .select('reddit_account_id, refresh_token_enc')
+      .in('reddit_account_id', [a, b])
+
+    const [um, dois] = leitura.data!
+    expect(um.refresh_token_enc).not.toBe(dois.refresh_token_enc)
   })
 
   it('refresh inválido marca a conta como disconnected', async () => {
@@ -3011,9 +3200,25 @@ describe('connectAccount', () => {
       .select('access_token_enc, refresh_token_enc')
       .eq('reddit_account_id', id)
       .single()
+
+    const { decryptSecret } = await import('@/lib/crypto/aes-gcm')
+
+    // Difere do claro, não contém o claro, e volta ao claro no servidor.
+    expect(segredo.data!.access_token_enc).not.toBe('AT-1')
     expect(segredo.data!.access_token_enc).not.toContain('AT-1')
     expect(segredo.data!.refresh_token_enc).not.toContain('RT-1')
-    expect(segredo.data!.access_token_enc.startsWith('v1.')).toBe(true)
+    expect(
+      decryptSecret(
+        segredo.data!.access_token_enc,
+        `reddit_account_secrets:access_token:${id}`,
+      ),
+    ).toBe('AT-1')
+    expect(
+      decryptSecret(
+        segredo.data!.refresh_token_enc,
+        `reddit_account_secrets:refresh_token:${id}`,
+      ),
+    ).toBe('RT-1')
   })
 
   it('reconectar a mesma conta atualiza em vez de duplicar', async () => {
@@ -3388,6 +3593,7 @@ import { adminClient, cleanupTestUsers, createTestUser } from './helpers'
 import {
   saveNetworkConfigFor,
   clearNetworkConfigFor,
+  clearProxyCredentialsFor,
 } from '@/lib/reddit/network-config'
 import type { VerifiedAccount } from '@/lib/auth/ownership'
 
@@ -3462,6 +3668,51 @@ describe('saveNetworkConfigFor', () => {
     const depois = await lerConfig()
 
     expect(depois.proxy_password_enc).not.toBe(antes.proxy_password_enc)
+  })
+})
+
+describe('clearProxyCredentialsFor', () => {
+  it('apaga usuário e senha mantendo host, porta e protocolo', async () => {
+    await saveNetworkConfigFor(account, { ...base, password: 'senha-secreta' })
+    await clearProxyCredentialsFor(account)
+
+    const { data } = await adminClient()
+      .from('reddit_account_network_configs')
+      .select(
+        'proxy_username, proxy_password_enc, proxy_host, proxy_port, proxy_protocol, proxy_enabled',
+      )
+      .eq('reddit_account_id', account.id)
+      .single()
+
+    expect(data!.proxy_username).toBeNull()
+    expect(data!.proxy_password_enc).toBeNull()
+    expect(data!.proxy_host).toBe('proxy.exemplo.com')
+    expect(data!.proxy_port).toBe(1080)
+    expect(data!.proxy_protocol).toBe('socks5')
+    expect(data!.proxy_enabled).toBe(true)
+  })
+
+  it('depois de limpar, salvar sem senha não ressuscita a antiga', async () => {
+    await saveNetworkConfigFor(account, { ...base, password: 'senha-secreta' })
+    await clearProxyCredentialsFor(account)
+    await saveNetworkConfigFor(account, { ...base, username: '', password: '' })
+
+    const config = await lerConfig()
+    expect(config.proxy_password_enc).toBeNull()
+  })
+
+  it('o dispatcher passa a ser montado sem credenciais', async () => {
+    await saveNetworkConfigFor(account, { ...base, password: 'senha-secreta' })
+    await clearProxyCredentialsFor(account)
+
+    const { getNetworkConfig } = await import('@/lib/auth/ownership')
+    const { buildProxyUrl } = await import('@/lib/reddit/reddit-client-factory')
+    const config = await getNetworkConfig(account)
+
+    expect(config).not.toBeNull()
+    expect(config!.username).toBeNull()
+    expect(config!.password).toBeNull()
+    expect(buildProxyUrl(config!)).toBe('socks5://proxy.exemplo.com:1080')
   })
 
   it('salvar atualiza os campos derivados com o host mascarado', async () => {
@@ -3568,7 +3819,11 @@ export type ActionState = { error: string | null; ok: boolean }
 import { revalidatePath } from 'next/cache'
 import { assertAccountAccess, ForbiddenError } from '@/lib/auth/ownership'
 import { createServerSupabase } from '@/lib/supabase/server'
-import { saveNetworkConfigFor, clearNetworkConfigFor } from '@/lib/reddit/network-config'
+import {
+  saveNetworkConfigFor,
+  clearNetworkConfigFor,
+  clearProxyCredentialsFor,
+} from '@/lib/reddit/network-config'
 import { networkConfigSchema, type ActionState } from './schema'
 
 export async function saveNetworkConfig(
@@ -3614,6 +3869,26 @@ export async function disableNetworkConfig(
     await clearNetworkConfigFor(account)
   } catch {
     return { error: 'Não foi possível desativar a configuração de rede.', ok: false }
+  }
+
+  revalidatePath('/dashboard/accounts')
+  return { error: null, ok: true }
+}
+
+export async function clearProxyCredentials(
+  _prev: ActionState,
+  formData: FormData,
+): Promise<ActionState> {
+  const accountId = String(formData.get('accountId') ?? '')
+
+  try {
+    const account = await assertAccountAccess(accountId)
+    await clearProxyCredentialsFor(account)
+  } catch {
+    return {
+      error: 'Não foi possível remover as credenciais do proxy.',
+      ok: false,
+    }
   }
 
   revalidatePath('/dashboard/accounts')
@@ -3700,6 +3975,24 @@ export async function saveNetworkConfigFor(
   )
 }
 
+/**
+ * Remove usuário e senha do proxy, mantendo host, porta e protocolo.
+ *
+ * Existe porque "senha em branco preserva a atual" torna impossível apagar
+ * uma credencial pelo formulário: sem esta ação, uma senha gravada por engano
+ * ficaria no banco para sempre.
+ */
+export async function clearProxyCredentialsFor(
+  account: VerifiedAccount,
+): Promise<void> {
+  const admin = createAdminSupabase()
+  await admin
+    .from('reddit_account_network_configs')
+    .update({ proxy_username: null, proxy_password_enc: null })
+    .eq('reddit_account_id', account.id)
+}
+
+/** Remove a configuração de rede inteira: a conta volta à conexão direta. */
 export async function clearNetworkConfigFor(
   account: VerifiedAccount,
 ): Promise<void> {
@@ -3894,6 +4187,7 @@ export function AccountCard({
 
 import { useActionState, useState } from 'react'
 import {
+  clearProxyCredentials,
   disableNetworkConfig,
   disconnectAccount,
   saveNetworkConfig,
@@ -3919,6 +4213,10 @@ export function NetworkForm({
     disableNetworkConfig,
     initial,
   )
+  const [, clearCredsAction, clearingCreds] = useActionState(
+    clearProxyCredentials,
+    initial,
+  )
   const [, disconnectAction, disconnecting] = useActionState(
     disconnectAccount,
     initial,
@@ -3936,15 +4234,28 @@ export function NetworkForm({
         </button>
 
         {enabled && (
-          <form action={disableAction}>
-            <input type="hidden" name="accountId" value={accountId} />
-            <button
-              disabled={disabling}
-              className="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-700 disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-300"
-            >
-              Usar conexão direta
-            </button>
-          </form>
+          <>
+            <form action={clearCredsAction}>
+              <input type="hidden" name="accountId" value={accountId} />
+              <button
+                disabled={clearingCreds}
+                title="Remove usuário e senha, mantendo host e porta"
+                className="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-700 disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-300"
+              >
+                Remover credenciais
+              </button>
+            </form>
+
+            <form action={disableAction}>
+              <input type="hidden" name="accountId" value={accountId} />
+              <button
+                disabled={disabling}
+                className="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-700 disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-300"
+              >
+                Usar conexão direta
+              </button>
+            </form>
+          </>
         )}
 
         <form action={disconnectAction}>
@@ -4074,7 +4385,15 @@ git commit -m "feat: pagina de contas reddit com configuracao de rede por conta"
 - [ ] Conectar conta pelo OAuth oficial funciona ponta a ponta com credenciais reais
 - [ ] Reusar o mesmo `state` falha (`state_invalido`), provado em teste e no navegador
 - [ ] `state` de outra sessão é recusado, e a recusa **não** consome o state do dono legítimo
-- [ ] Nenhum token ou senha de proxy é legível no banco: tudo com prefixo `v1.`
+- [ ] Nenhum token ou senha de proxy é legível no banco, provado por três
+      verificações e não pelo prefixo do envelope: o valor armazenado difere do
+      texto claro, não o contém (nem em base64 ou hex), e o decrypt server-side
+      devolve exatamente o original
+- [ ] Cifrar o mesmo valor duas vezes produz registros diferentes
+- [ ] Existe ação explícita para remover usuário e senha do proxy mantendo
+      host e porta, com teste dedicado
+- [ ] `VerifiedAccount` é tratado como ergonomia: a garantia é provada por
+      checagem de posse em runtime, RLS, constraints e testes A/B
 - [ ] O dono da conta **não** consegue ler `reddit_account_secrets` nem `reddit_account_network_configs` pelo Data API
 - [ ] A view devolve host mascarado e nunca usuário, senha ou host completo
 - [ ] Usuário A não lê, altera nem usa contas, segredos ou configuração de rede de B (suíte IDOR)
