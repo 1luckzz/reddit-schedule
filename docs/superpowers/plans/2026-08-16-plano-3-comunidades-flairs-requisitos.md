@@ -23,7 +23,8 @@ As dos Planos 1 e 2 continuam valendo integralmente. Estas se somam:
 - **Nenhuma leitura inventa campo.** O parsing aceita apenas os campos documentados, com fallback defensivo onde a API é conhecidamente inconsistente (`over18` vs `over_18`).
 - **Toda chamada à API alimenta o orçamento de rate limit** a partir dos headers `X-Ratelimit-*`, que são a fonte operacional de verdade.
 - **Paginação sempre com teto.** Nenhum laço de paginação sem limite máximo de páginas.
-- **Falha em ler flairs não é falha fatal.** Uma comunidade pode não expor flairs; isso vira lista vazia com aviso, não erro.
+- **Default só preenche campo ausente de resposta válida.** Falha de leitura nunca vira resultado permissivo: "não consegui ler" e "não há restrição" são afirmações diferentes, e confundi-las libera publicações que o Reddit vai recusar. Erro de leitura sempre lança.
+- **Reserva de orçamento é atômica.** A verificação e o incremento acontecem numa única função SQL com `SELECT ... FOR UPDATE`; nenhuma checagem-depois-escrita em duas etapas.
 - **Teste que toca o banco vive em `tests/db/`** — o CI roda `--exclude "tests/db/**"`.
 - **Portão de task:** `npm run verify` verde. O hook de pre-commit já bloqueia o commit se falhar.
 
@@ -337,7 +338,7 @@ git commit -m "feat: schema de comunidades moderadas"
 **Files:**
 - Create: `supabase/migrations/<timestamp>_reddit_api_budget.sql`
 - Create: `src/lib/reddit/budget.ts`
-- Modify: `src/lib/reddit/client.ts` (callback `onRateLimit`)
+- Modify: `src/lib/reddit/client.ts` (callbacks `onBeforeRequest` e `onAfterRequest`)
 - Modify: `src/lib/reddit/reddit-client-factory.ts` (injeta o gravador)
 - Test: `tests/db/budget.test.ts`
 - Test: `tests/reddit/client-budget.test.ts`
@@ -345,14 +346,37 @@ git commit -m "feat: schema de comunidades moderadas"
 **Interfaces:**
 - Consumes: `RateLimitSnapshot` (Plano 2)
 - Produces:
-  - `recordRateLimit(snapshot: RateLimitSnapshot): Promise<void>`
+  - `reserveBudget(): Promise<void>` — reserva capacidade **atomicamente**; lança `RedditError` com `code: 'BUDGET_EXHAUSTED'` quando negada
+  - `reconcileBudget(snapshot: RateLimitSnapshot | null): Promise<void>` — devolve a reserva e sincroniza com os headers; `null` apenas libera
   - `getBudget(): Promise<Budget | null>`
-  - `assertBudgetAvailable(): Promise<void>` — lança `RedditError` com `code: 'BUDGET_EXHAUSTED'`
-  - `BUDGET_THRESHOLD` — limiar abaixo do qual o sistema se pausa
+  - `BUDGET_THRESHOLD` — folga mantida antes do limite real
 
-**Por que agora, e não no Plano 5:** a sincronização de comunidades pagina `/subreddits/mine/moderator` e pode gastar várias requisições numa única ação do usuário, por conta. É a primeira funcionalidade capaz de esgotar a quota, então o orçamento precisa existir aqui. O que fica para o Plano 5 é a **espera** coordenada: aqui, orçamento esgotado significa recusar a ação com mensagem clara, não dormir segurando um request HTTP.
+**Por que agora, e não no Plano 5:** a sincronização de comunidades pagina `/subreddits/mine/moderator` e pode gastar várias requisições numa única ação do usuário, por conta. É a primeira funcionalidade capaz de esgotar a quota, então o orçamento precisa existir aqui. O que fica para o Plano 5 é a **espera** coordenada: aqui, orçamento esgotado significa recusar a ação com mensagem clara, sem dormir segurando um request HTTP.
 
-**Limite do desenho, registrado de propósito:** o orçamento é lido antes e gravado depois de cada requisição, sem transação envolvendo a chamada externa. Duas requisições simultâneas podem ambas passar pela checagem antes de qualquer uma gravar. Isso é aceitável porque o limiar tem folga e o Reddit devolve 429 (tratado como `retryable`) no pior caso — mas é uma aproximação, não uma garantia.
+### O modelo de reserva
+
+Banco e chamada externa não formam uma transação — isso é da natureza do
+problema. Mas a **reserva interna** precisa ser livre de corrida: duas
+requisições concorrentes não podem reservar a mesma capacidade.
+
+O ciclo tem três estados e uma coluna dedicada, `reserved`, que conta as
+requisições em voo desde o último snapshot:
+
+1. **Reservar**, antes da chamada: uma função SQL com `SELECT ... FOR UPDATE`
+   serializa as chamadas concorrentes, verifica `remaining - reserved - 1`
+   contra o limiar e incrementa `reserved`. Duas requisições simultâneas são
+   necessariamente ordenadas pelo lock da linha, e a segunda enxerga a reserva
+   da primeira.
+2. **Reconciliar**, depois da resposta: grava `used`, `remaining` e `reset_at`
+   vindos dos headers — que são a autoridade — e decrementa `reserved`.
+3. **Liberar**, quando a requisição falha sem resposta: apenas decrementa
+   `reserved`, sem tocar nos números do Reddit.
+
+`reserved` é zerado quando a janela expira (`reset_at <= now()`), porque
+reservas de uma janela encerrada não significam mais nada.
+
+Quando `remaining` é desconhecido (nenhuma resposta ainda), a reserva é
+permitida: o Reddit responde 429 no pior caso, e 429 é `retryable`.
 
 - [ ] **Step 1: Criar a migration**
 
@@ -375,20 +399,28 @@ beforeEach(async () => {
   await adminClient().from('reddit_api_budget').delete().neq('client_id_hash', '')
 })
 
-describe('orçamento de rate limit', () => {
+async function semearOrcamento(remaining: number, resetSeconds = 300) {
+  const { reserveBudget, reconcileBudget } = await import('@/lib/reddit/budget')
+  // Uma reserva seguida de reconciliação deixa reserved = 0 e os números do
+  // Reddit gravados, que é o estado normal entre requisições.
+  await reserveBudget()
+  await reconcileBudget({ used: 100 - remaining, remaining, resetSeconds })
+}
+
+describe('reconciliação do orçamento', () => {
   it('grava o snapshot vindo dos headers', async () => {
-    const { recordRateLimit, getBudget } = await import('@/lib/reddit/budget')
-    await recordRateLimit({ used: 10, remaining: 90, resetSeconds: 300 })
+    const { getBudget } = await import('@/lib/reddit/budget')
+    await semearOrcamento(90)
 
     const budget = await getBudget()
     expect(budget!.remaining).toBe(90)
     expect(budget!.used).toBe(10)
-    expect(budget!.resetAt.getTime()).toBeGreaterThan(Date.now())
+    expect(budget!.resetAt!.getTime()).toBeGreaterThan(Date.now())
+    expect(budget!.reserved).toBe(0)
   })
 
   it('não guarda o client_id em claro, apenas o hash', async () => {
-    const { recordRateLimit } = await import('@/lib/reddit/budget')
-    await recordRateLimit({ used: 1, remaining: 99, resetSeconds: 60 })
+    await semearOrcamento(99)
 
     const { data } = await adminClient()
       .from('reddit_api_budget')
@@ -398,47 +430,60 @@ describe('orçamento de rate limit', () => {
     expect(data!.client_id_hash).toHaveLength(64)
   })
 
-  it('snapshot sem headers não sobrescreve o orçamento conhecido', async () => {
-    const { recordRateLimit, getBudget } = await import('@/lib/reddit/budget')
-    await recordRateLimit({ used: 10, remaining: 90, resetSeconds: 300 })
-    await recordRateLimit({ used: null, remaining: null, resetSeconds: null })
-
-    const budget = await getBudget()
-    expect(budget!.remaining).toBe(90)
-  })
-
-  it('pausa quando o restante cai abaixo do limiar', async () => {
-    const { recordRateLimit, getBudget, BUDGET_THRESHOLD } = await import(
+  it('snapshot nulo libera a reserva sem apagar os números conhecidos', async () => {
+    const { reserveBudget, reconcileBudget, getBudget } = await import(
       '@/lib/reddit/budget'
     )
-    await recordRateLimit({
-      used: 99,
-      remaining: BUDGET_THRESHOLD - 1,
-      resetSeconds: 120,
-    })
+    await semearOrcamento(90)
+
+    await reserveBudget()
+    expect((await getBudget())!.reserved).toBe(1)
+
+    await reconcileBudget(null)
+    const budget = await getBudget()
+    expect(budget!.remaining).toBe(90)
+    expect(budget!.reserved).toBe(0)
+  })
+
+  it('pausa quando o restante fica abaixo do limiar', async () => {
+    const { getBudget, BUDGET_THRESHOLD } = await import('@/lib/reddit/budget')
+    await semearOrcamento(BUDGET_THRESHOLD - 1, 120)
 
     const budget = await getBudget()
     expect(budget!.pausedUntil).not.toBeNull()
     expect(budget!.pausedUntil!.getTime()).toBeGreaterThan(Date.now())
   })
+})
 
-  it('assertBudgetAvailable recusa enquanto a pausa vale', async () => {
-    const { recordRateLimit, assertBudgetAvailable, BUDGET_THRESHOLD } =
-      await import('@/lib/reddit/budget')
-    await recordRateLimit({
-      used: 100,
-      remaining: BUDGET_THRESHOLD - 1,
-      resetSeconds: 300,
-    })
+describe('reserva atômica', () => {
+  it('sem orçamento conhecido, a reserva é permitida', async () => {
+    const { reserveBudget } = await import('@/lib/reddit/budget')
+    await expect(reserveBudget()).resolves.toBeUndefined()
+  })
 
-    await expect(assertBudgetAvailable()).rejects.toMatchObject({
+  it('cada reserva incrementa o contador de requisições em voo', async () => {
+    const { reserveBudget, getBudget } = await import('@/lib/reddit/budget')
+    await semearOrcamento(90)
+
+    await reserveBudget()
+    await reserveBudget()
+    expect((await getBudget())!.reserved).toBe(2)
+  })
+
+  it('recusa enquanto a pausa vale', async () => {
+    const { reserveBudget, BUDGET_THRESHOLD } = await import(
+      '@/lib/reddit/budget'
+    )
+    await semearOrcamento(BUDGET_THRESHOLD - 1)
+
+    await expect(reserveBudget()).rejects.toMatchObject({
       code: 'BUDGET_EXHAUSTED',
       disposition: 'retryable',
     })
   })
 
-  it('assertBudgetAvailable libera depois que a pausa expira', async () => {
-    const { assertBudgetAvailable } = await import('@/lib/reddit/budget')
+  it('volta a permitir quando a janela expira', async () => {
+    const { reserveBudget, getBudget } = await import('@/lib/reddit/budget')
     const { createHash } = await import('node:crypto')
     const hash = createHash('sha256').update('cid-fake-budget').digest('hex')
 
@@ -446,29 +491,61 @@ describe('orçamento de rate limit', () => {
       client_id_hash: hash,
       used: 100,
       remaining: 0,
+      reserved: 5,
       reset_at: new Date(Date.now() - 1000).toISOString(),
       paused_until: new Date(Date.now() - 1000).toISOString(),
     })
 
-    await expect(assertBudgetAvailable()).resolves.toBeUndefined()
+    await expect(reserveBudget()).resolves.toBeUndefined()
+
+    // A janela encerrada zera as reservas em voo antes de contar a nova.
+    const budget = await getBudget()
+    expect(budget!.reserved).toBe(1)
   })
 
-  it('sem orçamento registrado, a ação é permitida', async () => {
-    const { assertBudgetAvailable } = await import('@/lib/reddit/budget')
-    await expect(assertBudgetAvailable()).resolves.toBeUndefined()
+  it('CORRIDA: reservas concorrentes não excedem a capacidade', async () => {
+    // Este é o teste que justifica a função SQL. Com remaining = threshold + 3,
+    // cabem exatamente 3 reservas; as demais precisam ser recusadas mesmo
+    // disparadas todas ao mesmo tempo.
+    const { reserveBudget, getBudget, BUDGET_THRESHOLD } = await import(
+      '@/lib/reddit/budget'
+    )
+    const capacidade = 3
+    await semearOrcamento(BUDGET_THRESHOLD + capacidade)
+
+    const tentativas = await Promise.allSettled(
+      Array.from({ length: 10 }, () => reserveBudget()),
+    )
+
+    const aceitas = tentativas.filter((r) => r.status === 'fulfilled').length
+    const recusadas = tentativas.filter((r) => r.status === 'rejected').length
+
+    expect(aceitas).toBe(capacidade)
+    expect(recusadas).toBe(10 - capacidade)
+    expect((await getBudget())!.reserved).toBe(capacidade)
+  })
+
+  it('CORRIDA: o contador em voo nunca fica negativo', async () => {
+    const { reconcileBudget, getBudget } = await import('@/lib/reddit/budget')
+    await semearOrcamento(90)
+
+    // Mais reconciliações que reservas: o contador satura em zero.
+    await Promise.all([
+      reconcileBudget(null),
+      reconcileBudget(null),
+      reconcileBudget(null),
+    ])
+    expect((await getBudget())!.reserved).toBe(0)
   })
 
   it('a mensagem de orçamento esgotado é legível e sem jargão', async () => {
-    const { recordRateLimit, assertBudgetAvailable, BUDGET_THRESHOLD } =
-      await import('@/lib/reddit/budget')
-    await recordRateLimit({
-      used: 100,
-      remaining: BUDGET_THRESHOLD - 1,
-      resetSeconds: 300,
-    })
+    const { reserveBudget, BUDGET_THRESHOLD } = await import(
+      '@/lib/reddit/budget'
+    )
+    await semearOrcamento(BUDGET_THRESHOLD - 1)
 
     try {
-      await assertBudgetAvailable()
+      await reserveBudget()
       throw new Error('deveria ter lançado')
     } catch (e) {
       const msg = (e as { userMessage: string }).userMessage
@@ -477,8 +554,25 @@ describe('orçamento de rate limit', () => {
     }
   })
 
+  it('as funções de orçamento não são chamáveis por anon nem authenticated', async () => {
+    const { withSql } = await import('./sql')
+    const { rows } = await withSql((db) =>
+      db.query(
+        `select p.proname, r.rolname
+         from pg_proc p
+         join pg_namespace n on n.oid = p.pronamespace
+         cross join lateral (values ('anon'), ('authenticated')) as r(rolname)
+         where n.nspname = 'public'
+           and p.proname in ('reserve_api_budget', 'reconcile_api_budget')
+           and has_function_privilege(r.rolname, p.oid, 'EXECUTE')`,
+      ),
+    )
+    expect(rows).toHaveLength(0)
+  })
+
   it('o cliente não alcança a tabela pelo Data API', async () => {
-    const { rows } = await (await import('./sql')).withSql((db) =>
+    const { withSql } = await import('./sql')
+    const { rows } = await withSql((db) =>
       db.query(
         `select privilege_type from information_schema.role_table_grants
          where grantee in ('anon','authenticated')
@@ -513,12 +607,54 @@ afterEach(async () => {
   await agent.close()
 })
 
+const me = (p: string) => p.startsWith('/api/v1/me')
+const pool = () => agent.get('https://oauth.reddit.com')
+
 describe('client e orçamento', () => {
-  it('chama onRateLimit com o snapshot da resposta', async () => {
-    const onRateLimit = vi.fn()
-    agent
-      .get('https://oauth.reddit.com')
-      .intercept({ path: (p: string) => p.startsWith('/api/v1/me'), method: 'GET' })
+  it('reserva antes de emitir a requisição', async () => {
+    const ordem: string[] = []
+    const onBeforeRequest = vi.fn(async () => {
+      ordem.push('reserva')
+    })
+
+    pool()
+      .intercept({ path: me, method: 'GET' })
+      .reply(200, () => {
+        ordem.push('requisicao')
+        return { id: 't2_1' }
+      })
+
+    const client = createRedditClient({
+      accessToken: 'AT',
+      dispatcher: agent,
+      onBeforeRequest,
+    })
+    await client.request({ path: '/api/v1/me' })
+
+    expect(ordem).toEqual(['reserva', 'requisicao'])
+  })
+
+  it('reserva negada impede a requisição e propaga o erro', async () => {
+    const onBeforeRequest = vi.fn().mockRejectedValue(
+      Object.assign(new Error('sem orçamento'), { code: 'BUDGET_EXHAUSTED' }),
+    )
+
+    // Nenhum intercept: se a requisição saísse, o teste falharia.
+    const client = createRedditClient({
+      accessToken: 'AT',
+      dispatcher: agent,
+      onBeforeRequest,
+    })
+
+    await expect(client.request({ path: '/api/v1/me' })).rejects.toMatchObject({
+      code: 'BUDGET_EXHAUSTED',
+    })
+  })
+
+  it('reconcilia com o snapshot da resposta', async () => {
+    const onAfterRequest = vi.fn()
+    pool()
+      .intercept({ path: me, method: 'GET' })
       .reply(200, { id: 't2_1' }, {
         headers: {
           'x-ratelimit-used': '5',
@@ -530,22 +666,21 @@ describe('client e orçamento', () => {
     const client = createRedditClient({
       accessToken: 'AT',
       dispatcher: agent,
-      onRateLimit,
+      onAfterRequest,
     })
     await client.request({ path: '/api/v1/me' })
 
-    expect(onRateLimit).toHaveBeenCalledWith({
+    expect(onAfterRequest).toHaveBeenCalledWith({
       used: 5,
       remaining: 95,
       resetSeconds: 200,
     })
   })
 
-  it('também reporta o snapshot quando a resposta é erro', async () => {
-    const onRateLimit = vi.fn()
-    agent
-      .get('https://oauth.reddit.com')
-      .intercept({ path: (p: string) => p.startsWith('/api/v1/me'), method: 'GET' })
+  it('também reconcilia quando a resposta é erro', async () => {
+    const onAfterRequest = vi.fn()
+    pool()
+      .intercept({ path: me, method: 'GET' })
       .reply(429, {}, {
         headers: { 'x-ratelimit-remaining': '0', 'retry-after': '30' },
       })
@@ -553,33 +688,74 @@ describe('client e orçamento', () => {
     const client = createRedditClient({
       accessToken: 'AT',
       dispatcher: agent,
-      onRateLimit,
+      onAfterRequest,
     })
     await expect(client.request({ path: '/api/v1/me' })).rejects.toBeTruthy()
-    expect(onRateLimit).toHaveBeenCalled()
+    expect(onAfterRequest).toHaveBeenCalled()
   })
 
-  it('falha do gravador de orçamento não derruba a requisição', async () => {
-    // Registrar orçamento é telemetria: não pode custar a operação do usuário.
-    const onRateLimit = vi.fn().mockRejectedValue(new Error('banco fora'))
-    agent
-      .get('https://oauth.reddit.com')
-      .intercept({ path: (p: string) => p.startsWith('/api/v1/me'), method: 'GET' })
-      .reply(200, { id: 't2_1' })
+  it('libera a reserva com null quando não há resposta', async () => {
+    const onAfterRequest = vi.fn()
+    pool()
+      .intercept({ path: me, method: 'GET' })
+      .replyWithError(Object.assign(new Error('dns'), { code: 'ENOTFOUND' }))
 
     const client = createRedditClient({
       accessToken: 'AT',
       dispatcher: agent,
-      onRateLimit,
+      onAfterRequest,
+    })
+    await expect(client.request({ path: '/api/v1/me' })).rejects.toBeTruthy()
+
+    // null significa "sem informação": libera a reserva sem mexer nos números.
+    expect(onAfterRequest).toHaveBeenCalledWith(null)
+  })
+
+  it('toda reserva aceita tem exatamente uma devolução', async () => {
+    const eventos: string[] = []
+    const onBeforeRequest = vi.fn(async () => {
+      eventos.push('reserva')
+    })
+    const onAfterRequest = vi.fn(async () => {
+      eventos.push('devolucao')
+    })
+
+    pool().intercept({ path: me, method: 'GET' }).reply(200, { id: 't2_1' })
+    pool().intercept({ path: me, method: 'GET' }).reply(403, {})
+    pool()
+      .intercept({ path: me, method: 'GET' })
+      .replyWithError(Object.assign(new Error('x'), { code: 'ECONNREFUSED' }))
+
+    const client = createRedditClient({
+      accessToken: 'AT',
+      dispatcher: agent,
+      onBeforeRequest,
+      onAfterRequest,
+    })
+
+    await client.request({ path: '/api/v1/me' }).catch(() => {})
+    await client.request({ path: '/api/v1/me' }).catch(() => {})
+    await client.request({ path: '/api/v1/me' }).catch(() => {})
+
+    expect(eventos.filter((e) => e === 'reserva')).toHaveLength(3)
+    expect(eventos.filter((e) => e === 'devolucao')).toHaveLength(3)
+  })
+
+  it('falha da reconciliação não derruba a requisição', async () => {
+    // Reconciliar é telemetria: não pode custar a operação do usuário.
+    const onAfterRequest = vi.fn().mockRejectedValue(new Error('banco fora'))
+    pool().intercept({ path: me, method: 'GET' }).reply(200, { id: 't2_1' })
+
+    const client = createRedditClient({
+      accessToken: 'AT',
+      dispatcher: agent,
+      onAfterRequest,
     })
     await expect(client.request({ path: '/api/v1/me' })).resolves.toBeTruthy()
   })
 
-  it('sem onRateLimit, o cliente funciona normalmente', async () => {
-    agent
-      .get('https://oauth.reddit.com')
-      .intercept({ path: (p: string) => p.startsWith('/api/v1/me'), method: 'GET' })
-      .reply(200, { id: 't2_1' })
+  it('sem callbacks, o cliente funciona normalmente', async () => {
+    pool().intercept({ path: me, method: 'GET' }).reply(200, { id: 't2_1' })
 
     const client = createRedditClient({ accessToken: 'AT', dispatcher: agent })
     await expect(client.request({ path: '/api/v1/me' })).resolves.toBeTruthy()
@@ -606,6 +782,10 @@ create table public.reddit_api_budget (
   used integer,
   remaining integer,
   reset_at timestamptz,
+  -- Requisições em voo desde o último snapshot. Sem esta coluna, duas
+  -- chamadas concorrentes veriam o mesmo `remaining` e reservariam a mesma
+  -- capacidade.
+  reserved integer not null default 0 check (reserved >= 0),
   paused_until timestamptz,
   updated_at timestamptz not null default now()
 );
@@ -619,6 +799,122 @@ grant all on public.reddit_api_budget to service_role;
 create trigger reddit_api_budget_set_updated_at
   before update on public.reddit_api_budget
   for each row execute function public.set_updated_at();
+
+-- ---------------------------------------------------------------
+-- Reserva atômica de capacidade.
+-- ---------------------------------------------------------------
+-- O SELECT ... FOR UPDATE serializa chamadas concorrentes: a segunda espera
+-- a primeira terminar e enxerga a reserva dela. É isto que impede duas
+-- requisições de reservarem a mesma capacidade.
+--
+-- SECURITY INVOKER de propósito: a função é chamada pelo service_role, que já
+-- tem acesso à tabela, e não precisa de privilégio elevado.
+create or replace function public.reserve_api_budget(
+  p_client_id_hash text,
+  p_threshold integer
+)
+returns table (allowed boolean, remaining integer, paused_until timestamptz)
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+declare
+  v_row public.reddit_api_budget;
+begin
+  insert into public.reddit_api_budget (client_id_hash)
+  values (p_client_id_hash)
+  on conflict (client_id_hash) do nothing;
+
+  select * into v_row
+  from public.reddit_api_budget
+  where client_id_hash = p_client_id_hash
+  for update;
+
+  -- Janela encerrada: o orçamento anterior e as reservas em voo daquela
+  -- janela não significam mais nada.
+  if v_row.reset_at is not null and v_row.reset_at <= now() then
+    update public.reddit_api_budget
+    set used = null, remaining = null, reset_at = null,
+        reserved = 0, paused_until = null
+    where client_id_hash = p_client_id_hash
+    returning * into v_row;
+  end if;
+
+  if v_row.paused_until is not null and v_row.paused_until > now() then
+    return query select false, v_row.remaining, v_row.paused_until;
+    return;
+  end if;
+
+  -- remaining nulo significa "ainda não sabemos": reservamos de forma
+  -- otimista, e o 429 do Reddit (retryable) é a rede de proteção.
+  if v_row.remaining is not null
+     and (v_row.remaining - v_row.reserved - 1) < p_threshold then
+    update public.reddit_api_budget
+    set paused_until = coalesce(v_row.reset_at, now() + interval '60 seconds')
+    where client_id_hash = p_client_id_hash
+    returning * into v_row;
+    return query select false, v_row.remaining, v_row.paused_until;
+    return;
+  end if;
+
+  update public.reddit_api_budget
+  set reserved = v_row.reserved + 1
+  where client_id_hash = p_client_id_hash
+  returning * into v_row;
+
+  return query select true, v_row.remaining, v_row.paused_until;
+end;
+$$;
+
+-- Devolve a reserva e sincroniza com os headers, que são a autoridade.
+-- Parâmetros nulos significam "sem informação": apenas libera a reserva.
+create or replace function public.reconcile_api_budget(
+  p_client_id_hash text,
+  p_used integer,
+  p_remaining integer,
+  p_reset_seconds integer,
+  p_threshold integer
+)
+returns void
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+declare
+  v_reset_at timestamptz;
+begin
+  v_reset_at := case
+    when p_reset_seconds is not null
+      then now() + make_interval(secs => p_reset_seconds)
+    else null
+  end;
+
+  update public.reddit_api_budget
+  set
+    used = coalesce(p_used, used),
+    remaining = coalesce(p_remaining, remaining),
+    reset_at = coalesce(v_reset_at, reset_at),
+    reserved = greatest(reserved - 1, 0),
+    paused_until = case
+      when p_remaining is not null and p_remaining < p_threshold
+        then coalesce(v_reset_at, now() + interval '60 seconds')
+      else paused_until
+    end
+  where client_id_hash = p_client_id_hash;
+end;
+$$;
+
+revoke execute on function public.reserve_api_budget(text, integer)
+  from public, anon, authenticated;
+revoke execute on function
+  public.reconcile_api_budget(text, integer, integer, integer, integer)
+  from public, anon, authenticated;
+
+grant execute on function public.reserve_api_budget(text, integer)
+  to service_role;
+grant execute on function
+  public.reconcile_api_budget(text, integer, integer, integer, integer)
+  to service_role;
 ```
 
 - [ ] **Step 6: Implementar a lib de orçamento**
@@ -642,6 +938,8 @@ export const BUDGET_THRESHOLD = 10
 export type Budget = {
   used: number | null
   remaining: number | null
+  /** Requisições em voo desde o último snapshot. */
+  reserved: number
   resetAt: Date | null
   pausedUntil: Date | null
 }
@@ -653,51 +951,71 @@ function clientHash(): string {
 }
 
 /**
- * Registra o snapshot dos headers. Snapshot vazio é ignorado: nem toda
- * resposta do Reddit traz os headers, e sobrescrever com null apagaria a
- * informação boa que já tínhamos.
+ * Reserva capacidade antes de uma requisição ao Reddit.
+ *
+ * A atomicidade vive na função SQL: um SELECT ... FOR UPDATE serializa as
+ * chamadas concorrentes, de modo que a segunda enxerga a reserva da primeira.
+ * Sem isso, duas requisições simultâneas leriam o mesmo `remaining` e
+ * reservariam a mesma capacidade.
+ *
+ * Toda reserva bem-sucedida PRECISA ser devolvida por reconcileBudget, mesmo
+ * quando a requisição falha — senão o contador de requisições em voo só sobe.
  */
-export async function recordRateLimit(
-  snapshot: RateLimitSnapshot,
-): Promise<void> {
-  if (
-    snapshot.used === null &&
-    snapshot.remaining === null &&
-    snapshot.resetSeconds === null
-  ) {
+export async function reserveBudget(): Promise<void> {
+  const admin = createAdminSupabase()
+  const { data, error } = await admin.rpc('reserve_api_budget', {
+    p_client_id_hash: clientHash(),
+    p_threshold: BUDGET_THRESHOLD,
+  })
+
+  if (error) {
+    // Falha ao falar com o orçamento não deve impedir o trabalho: o 429 do
+    // Reddit continua sendo a rede de proteção.
     return
   }
 
-  const agora = Date.now()
-  const resetAt =
-    snapshot.resetSeconds !== null
-      ? new Date(agora + snapshot.resetSeconds * 1000)
-      : null
+  const resultado = Array.isArray(data) ? data[0] : data
+  if (!resultado || resultado.allowed) return
 
-  const pausar =
-    snapshot.remaining !== null && snapshot.remaining < BUDGET_THRESHOLD
+  const pausadoAte = resultado.paused_until
+    ? new Date(resultado.paused_until as string)
+    : null
+  const segundos = pausadoAte
+    ? Math.max(1, Math.ceil((pausadoAte.getTime() - Date.now()) / 1000))
+    : 60
 
+  throw new RedditError({
+    code: 'BUDGET_EXHAUSTED',
+    disposition: 'retryable',
+    retryAfterSeconds: segundos,
+    userMessage: `O limite de requisições ao Reddit foi atingido. Aguarde cerca de ${segundos} segundos e tente novamente.`,
+  })
+}
+
+/**
+ * Devolve a reserva e sincroniza o orçamento com os headers da resposta.
+ *
+ * `null` significa que a requisição não produziu resposta legível: a reserva
+ * é liberada sem alterar os números vindos do Reddit.
+ */
+export async function reconcileBudget(
+  snapshot: RateLimitSnapshot | null,
+): Promise<void> {
   const admin = createAdminSupabase()
-  await admin.from('reddit_api_budget').upsert(
-    {
-      client_id_hash: clientHash(),
-      used: snapshot.used,
-      remaining: snapshot.remaining,
-      reset_at: resetAt?.toISOString() ?? null,
-      // Sem reset conhecido, uma pausa curta é melhor que nenhuma.
-      paused_until: pausar
-        ? (resetAt ?? new Date(agora + 60_000)).toISOString()
-        : null,
-    },
-    { onConflict: 'client_id_hash' },
-  )
+  await admin.rpc('reconcile_api_budget', {
+    p_client_id_hash: clientHash(),
+    p_used: snapshot?.used ?? null,
+    p_remaining: snapshot?.remaining ?? null,
+    p_reset_seconds: snapshot?.resetSeconds ?? null,
+    p_threshold: BUDGET_THRESHOLD,
+  })
 }
 
 export async function getBudget(): Promise<Budget | null> {
   const admin = createAdminSupabase()
   const { data } = await admin
     .from('reddit_api_budget')
-    .select('used, remaining, reset_at, paused_until')
+    .select('used, remaining, reset_at, reserved, paused_until')
     .eq('client_id_hash', clientHash())
     .maybeSingle()
 
@@ -706,75 +1024,93 @@ export async function getBudget(): Promise<Budget | null> {
   return {
     used: data.used,
     remaining: data.remaining,
+    reserved: data.reserved,
     resetAt: data.reset_at ? new Date(data.reset_at) : null,
     pausedUntil: data.paused_until ? new Date(data.paused_until) : null,
   }
-}
-
-/**
- * Recusa a ação enquanto a pausa vale.
- *
- * No web app isso vira mensagem ao usuário. No worker (Plano 5), vira espera
- * coordenada — aqui não seguramos um request HTTP dormindo.
- */
-export async function assertBudgetAvailable(): Promise<void> {
-  const budget = await getBudget()
-  if (!budget?.pausedUntil) return
-
-  const restanteMs = budget.pausedUntil.getTime() - Date.now()
-  if (restanteMs <= 0) return
-
-  const segundos = Math.ceil(restanteMs / 1000)
-  throw new RedditError({
-    code: 'BUDGET_EXHAUSTED',
-    disposition: 'retryable',
-    retryAfterSeconds: segundos,
-    userMessage: `O limite de requisições ao Reddit foi atingido. Aguarde cerca de ${segundos} segundos e tente novamente.`,
-  })
 }
 ```
 
 - [ ] **Step 7: Ligar o cliente ao orçamento**
 
-Em `src/lib/reddit/client.ts`, acrescente o callback opcional. O cliente
-continua sem conhecer o banco — quem injeta o gravador é o factory.
+O cliente continua sem conhecer o banco: recebe dois callbacks e o factory
+injeta as implementações.
+
+Em `src/lib/reddit/client.ts`, no tipo de opções:
 
 ```ts
-// no tipo de opções de createRedditClient
 export function createRedditClient(opts: {
   accessToken: string
   dispatcher?: Dispatcher
-  /** Telemetria de rate limit. Falhas aqui nunca derrubam a requisição. */
-  onRateLimit?: (snapshot: RateLimitSnapshot) => void | Promise<void>
+  /**
+   * Reserva capacidade antes da requisição. Pode lançar para recusar a
+   * chamada — é assim que o orçamento esgotado impede o tráfego.
+   */
+  onBeforeRequest?: () => Promise<void>
+  /**
+   * Devolve a reserva. Recebe o snapshot dos headers, ou null quando não
+   * houve resposta legível. Falhas aqui nunca derrubam a requisição.
+   */
+  onAfterRequest?: (
+    snapshot: RateLimitSnapshot | null,
+  ) => void | Promise<void>
 }): RedditClient {
 ```
 
-Logo depois de calcular `rateLimit`, antes de qualquer `throw`:
+Dentro de `request`, **antes** de montar a requisição — o erro de orçamento
+precisa subir para o chamador, então este `await` não é engolido:
+
+```ts
+      if (opts.onBeforeRequest) {
+        await opts.onBeforeRequest()
+      }
+```
+
+E a devolução da reserva, que precisa acontecer nos dois caminhos. No `catch`
+da falha de rede, antes de classificar:
+
+```ts
+      } catch (err) {
+        // Sem resposta: devolve a reserva sem tocar nos números do Reddit.
+        if (opts.onAfterRequest) {
+          void Promise.resolve(opts.onAfterRequest(null)).catch(() => {})
+        }
+        throw classifyNetwork(err, sideEffectAttempted)
+      }
+```
+
+E logo após calcular `rateLimit`, antes de qualquer `throw` por status:
 
 ```ts
       const rateLimit = readRateLimit(rawHeaders)
 
-      if (opts.onRateLimit) {
-        // Registrar orçamento é telemetria: não pode custar a operação.
-        void Promise.resolve(opts.onRateLimit(rateLimit)).catch(() => {})
+      if (opts.onAfterRequest) {
+        // Reconciliar é telemetria: não pode custar a operação do usuário.
+        void Promise.resolve(opts.onAfterRequest(rateLimit)).catch(() => {})
       }
 ```
 
-E em `src/lib/reddit/reddit-client-factory.ts`, na construção final:
+Em `src/lib/reddit/reddit-client-factory.ts`, na construção final:
 
 ```ts
   return createRedditClient({
     accessToken: secrets.accessToken,
     dispatcher,
-    onRateLimit: recordRateLimit,
+    onBeforeRequest: reserveBudget,
+    onAfterRequest: reconcileBudget,
   })
 ```
 
 com o import correspondente:
 
 ```ts
-import { recordRateLimit } from './budget'
+import { reconcileBudget, reserveBudget } from './budget'
 ```
+
+**Invariante a preservar:** toda reserva bem-sucedida precisa de exatamente uma
+devolução. Se um caminho novo de saída for adicionado a `request` no futuro,
+ele também precisa chamar `onAfterRequest` — senão o contador de requisições em
+voo só cresce e o orçamento se pausa sozinho.
 
 - [ ] **Step 8: Rodar e ver passar**
 
@@ -1121,7 +1457,7 @@ git commit -m "feat: leitura paginada das comunidades moderadas"
 - Test: `tests/db/sync-communities.test.ts`
 
 **Interfaces:**
-- Consumes: `VerifiedAccount`, `getRedditClient`, `listModeratedSubreddits`, `assertBudgetAvailable`
+- Consumes: `VerifiedAccount`, `getRedditClient`, `listModeratedSubreddits` (a reserva de orçamento acontece dentro do cliente)
 - Produces:
   - `type SyncResult` — `{ criadas: number; atualizadas: number; removidas: number; total: number }`
   - `syncCommunitiesFor(account: VerifiedAccount, opts?): Promise<SyncResult>`
@@ -1310,11 +1646,12 @@ describe('syncCommunitiesFor', () => {
     expect(data!.every((s) => s.owner_id === userA.id)).toBe(true)
   })
 
-  it('recusa sincronizar quando o orçamento está pausado', async () => {
-    const { recordRateLimit, BUDGET_THRESHOLD } = await import(
+  it('recusa sincronizar quando o orçamento está esgotado', async () => {
+    const { reserveBudget, reconcileBudget, BUDGET_THRESHOLD } = await import(
       '@/lib/reddit/budget'
     )
-    await recordRateLimit({
+    await reserveBudget()
+    await reconcileBudget({
       used: 100,
       remaining: BUDGET_THRESHOLD - 1,
       resetSeconds: 300,
@@ -1363,7 +1700,6 @@ import { createAdminSupabase } from '@/lib/supabase/admin'
 import type { VerifiedAccount } from '@/lib/auth/ownership'
 import { getRedditClient } from './reddit-client-factory'
 import { listModeratedSubreddits } from './communities'
-import { assertBudgetAvailable } from './budget'
 
 export type SyncResult = {
   criadas: number
@@ -1383,8 +1719,8 @@ export async function syncCommunitiesFor(
   account: VerifiedAccount,
   opts: { dispatcher?: Dispatcher; skipOwnershipCheck?: boolean } = {},
 ): Promise<SyncResult> {
-  await assertBudgetAvailable()
-
+  // A reserva por requisição acontece dentro do cliente; nada a fazer aqui
+  // além de deixar o erro de orçamento subir para a server action.
   const client = await getRedditClient(account, opts)
   const remotas = await listModeratedSubreddits(client)
 
@@ -1485,11 +1821,23 @@ git commit -m "feat: sincronizacao de comunidades moderadas"
 - Consumes: `RedditClient`
 - Produces:
   - `type LinkFlair` — `{ id, text, textEditable, modOnly, backgroundColor, textColor }`
-  - `listLinkFlairs(client, subredditName): Promise<{ flairs: LinkFlair[]; disponivel: boolean }>`
+  - `listLinkFlairs(client, subredditName): Promise<LinkFlair[]>`
 
 **Decisão:** flairs **não** são persistidos. Mudam sem aviso e ficariam desatualizados no formulário. São lidos sob demanda ao escolher a comunidade.
 
-**Tratamento de indisponibilidade:** nem toda comunidade expõe flairs, e a conta pode não ter permissão. Nesses casos a função devolve `{ flairs: [], disponivel: false }` em vez de lançar — a spec exige que o campo simplesmente desapareça da UI com aviso, não que o formulário quebre.
+**Falha de leitura nunca vira lista vazia.** Há uma diferença que importa:
+
+| Situação | Significado | Resultado |
+|---|---|---|
+| `200` com `[]` | a comunidade não tem flair cadastrado | `[]` — resultado válido |
+| `403`, `404` | não conseguimos saber quais flairs existem | **lança** `FLAIRS_UNAVAILABLE` |
+| `5xx`, rede | falha transitória | **lança**, `retryable` |
+
+Retornar `[]` num erro HTTP faria o formulário afirmar "esta comunidade não usa
+flair" quando a verdade é "não foi possível verificar" — e o Plano 4 usaria
+essa afirmação para liberar um agendamento que o Reddit vai recusar. Quem
+chama decide como apresentar a indisponibilidade; a camada de API não mente
+sobre o que sabe.
 
 - [ ] **Step 1: Escrever os testes falhando**
 
@@ -1541,11 +1889,7 @@ describe('listLinkFlairs', () => {
       .intercept({ path: flairPath, method: 'GET' })
       .reply(200, [flair('abc'), flair('def')])
 
-    const { flairs, disponivel } = await listLinkFlairs(
-      client(),
-      'minhacomunidade',
-    )
-    expect(disponivel).toBe(true)
+    const flairs = await listLinkFlairs(client(), 'minhacomunidade')
     expect(flairs).toHaveLength(2)
     expect(flairs[0]).toEqual({
       id: 'abc',
@@ -1570,33 +1914,37 @@ describe('listLinkFlairs', () => {
     expect(url).toContain('link_flair_v2')
   })
 
-  it('lista vazia é resultado válido, não indisponibilidade', async () => {
+  it('200 com array vazio é resultado válido: a comunidade não tem flair', async () => {
     pool().intercept({ path: flairPath, method: 'GET' }).reply(200, [])
-
-    const { flairs, disponivel } = await listLinkFlairs(
-      client(),
-      'minhacomunidade',
-    )
-    expect(flairs).toEqual([])
-    expect(disponivel).toBe(true)
+    expect(await listLinkFlairs(client(), 'minhacomunidade')).toEqual([])
   })
 
-  it('403 vira indisponível, não erro fatal', async () => {
+  it('403 lança, em vez de fingir que não há flair', async () => {
+    // Devolver [] aqui faria o formulário afirmar algo que não sabe.
     pool().intercept({ path: flairPath, method: 'GET' }).reply(403, {})
-
-    const { flairs, disponivel } = await listLinkFlairs(
-      client(),
-      'minhacomunidade',
-    )
-    expect(flairs).toEqual([])
-    expect(disponivel).toBe(false)
+    await expect(
+      listLinkFlairs(client(), 'minhacomunidade'),
+    ).rejects.toMatchObject({ code: 'FLAIRS_UNAVAILABLE' })
   })
 
-  it('404 vira indisponível', async () => {
+  it('404 lança', async () => {
     pool().intercept({ path: flairPath, method: 'GET' }).reply(404, {})
-    expect((await listLinkFlairs(client(), 'minhacomunidade')).disponivel).toBe(
-      false,
-    )
+    await expect(
+      listLinkFlairs(client(), 'minhacomunidade'),
+    ).rejects.toMatchObject({ code: 'FLAIRS_UNAVAILABLE' })
+  })
+
+  it('a mensagem de indisponibilidade diz que não foi possível verificar', async () => {
+    pool().intercept({ path: flairPath, method: 'GET' }).reply(403, {})
+    try {
+      await listLinkFlairs(client(), 'minhacomunidade')
+      throw new Error('deveria ter lançado')
+    } catch (e) {
+      const msg = (e as { userMessage: string }).userMessage
+      expect(msg).toMatch(/não foi possível|nao foi possivel/i)
+      // Não pode afirmar ausência de flair.
+      expect(msg).not.toMatch(/não (tem|possui|usa) flair/i)
+    }
   })
 
   it('descarta flair sem id, que não daria para enviar', async () => {
@@ -1604,7 +1952,7 @@ describe('listLinkFlairs', () => {
       .intercept({ path: flairPath, method: 'GET' })
       .reply(200, [flair('ok'), { text: 'sem id' }])
 
-    const { flairs } = await listLinkFlairs(client(), 'minhacomunidade')
+    const flairs = await listLinkFlairs(client(), 'minhacomunidade')
     expect(flairs.map((f) => f.id)).toEqual(['ok'])
   })
 
@@ -1613,26 +1961,25 @@ describe('listLinkFlairs', () => {
       .intercept({ path: flairPath, method: 'GET' })
       .reply(200, [flair('mod', { mod_only: true })])
 
-    const { flairs } = await listLinkFlairs(client(), 'minhacomunidade')
+    const flairs = await listLinkFlairs(client(), 'minhacomunidade')
     expect(flairs[0].modOnly).toBe(true)
   })
 
-  it('resposta que não é array vira indisponível', async () => {
+  it('resposta 200 que não é array lança, por ser formato inesperado', async () => {
     pool()
       .intercept({ path: flairPath, method: 'GET' })
       .reply(200, { erro: 'formato inesperado' })
 
-    expect((await listLinkFlairs(client(), 'minhacomunidade')).disponivel).toBe(
-      false,
-    )
+    await expect(
+      listLinkFlairs(client(), 'minhacomunidade'),
+    ).rejects.toMatchObject({ code: 'FLAIRS_UNAVAILABLE' })
   })
 
-  it('erro de servidor propaga, porque é transitório', async () => {
-    // 5xx numa leitura é retryable: não é o mesmo que "não tem flair".
+  it('erro de servidor propaga como transitório', async () => {
     pool().intercept({ path: flairPath, method: 'GET' }).reply(503, {})
-    await expect(listLinkFlairs(client(), 'minhacomunidade')).rejects.toMatchObject(
-      { disposition: 'retryable' },
-    )
+    await expect(
+      listLinkFlairs(client(), 'minhacomunidade'),
+    ).rejects.toMatchObject({ disposition: 'retryable' })
   })
 })
 ```
@@ -1658,16 +2005,6 @@ export type LinkFlair = {
   textColor: string | null
 }
 
-export type FlairResult = {
-  flairs: LinkFlair[]
-  /**
-   * Falso quando a comunidade não expõe flairs ou a conta não tem permissão
-   * de lê-los. Diferente de `flairs: []` com `disponivel: true`, que significa
-   * "a comunidade usa flairs, mas não há nenhum cadastrado".
-   */
-  disponivel: boolean
-}
-
 function normalizar(raw: unknown): LinkFlair | null {
   if (!raw || typeof raw !== 'object') return null
   const f = raw as Record<string, unknown>
@@ -1684,42 +2021,52 @@ function normalizar(raw: unknown): LinkFlair | null {
   }
 }
 
+function indisponivel(): RedditError {
+  return new RedditError({
+    code: 'FLAIRS_UNAVAILABLE',
+    disposition: 'terminal',
+    userMessage:
+      'Não foi possível consultar os flairs desta comunidade. Verifique se a conta ainda a modera e tente novamente.',
+  })
+}
+
 /**
  * Lê os flairs de publicação de uma comunidade.
  *
  * Não persiste nada: flairs mudam sem aviso e um cache desatualizado faria o
  * formulário oferecer opções que o Reddit recusaria na submissão.
+ *
+ * Lista vazia só é devolvida quando o Reddit respondeu com sucesso e não havia
+ * flair cadastrado. Qualquer falha de leitura vira erro — devolver [] faria o
+ * formulário afirmar "esta comunidade não usa flair" quando a verdade é "não
+ * foi possível verificar", e o agendamento seria liberado com base numa
+ * afirmação falsa.
  */
 export async function listLinkFlairs(
   client: RedditClient,
   subredditName: string,
-): Promise<FlairResult> {
+): Promise<LinkFlair[]> {
+  let data: unknown
+
   try {
-    const { data } = await client.request<unknown>({
+    ;({ data } = await client.request<unknown>({
       path: `/r/${subredditName}/api/link_flair_v2`,
-    })
-
-    if (!Array.isArray(data)) {
-      return { flairs: [], disponivel: false }
-    }
-
-    return {
-      flairs: data
-        .map(normalizar)
-        .filter((f): f is LinkFlair => f !== null),
-      disponivel: true,
-    }
+    }))
   } catch (e) {
-    // Sem permissão ou comunidade sem flair: o campo some da UI, o formulário
-    // continua utilizável. Erros transitórios continuam subindo.
+    // Sem permissão ou comunidade inexistente: não sabemos quais flairs
+    // existem. Erros transitórios sobem com a disposição original.
     if (
       e instanceof RedditError &&
       (e.code === 'NO_PERMISSION' || e.code === 'NOT_FOUND')
     ) {
-      return { flairs: [], disponivel: false }
+      throw indisponivel()
     }
     throw e
   }
+
+  if (!Array.isArray(data)) throw indisponivel()
+
+  return data.map(normalizar).filter((f): f is LinkFlair => f !== null)
 }
 ```
 
@@ -1750,7 +2097,20 @@ git commit -m "feat: leitura de flairs de publicacao"
 - Produces:
   - `type PostRequirements` — normalizado, com os campos que o Plano 4 consome
   - `getPostRequirements(client, subredditName): Promise<PostRequirements>`
-  - `DEFAULT_REQUIREMENTS` — usado quando a comunidade não expõe requisitos
+  - `FIELD_DEFAULTS` — valores para **campos ausentes de uma resposta válida**
+
+**O escopo dos defaults.** Eles preenchem campo que a resposta não trouxe —
+nunca substituem uma resposta que não veio. Se a chamada falhar, a função
+lança `REQUIREMENTS_UNAVAILABLE`, porque "não consegui ler os requisitos" e
+"esta comunidade não tem requisitos" são afirmações diferentes, e tratar a
+primeira como a segunda libera um agendamento que o Reddit vai recusar.
+
+| Situação | Resultado |
+|---|---|
+| `200` com campos parciais | campos ausentes recebem o default |
+| `200` sem nenhum campo | todos os defaults — a comunidade não impõe restrição |
+| `403`, `404` | **lança** `REQUIREMENTS_UNAVAILABLE` |
+| `5xx`, rede | **lança**, `retryable` |
 
 Campos lidos de `GET /api/v1/{subreddit}/post_requirements`:
 `title_text_min_length`, `title_text_max_length`, `body_restriction_policy`
@@ -1769,7 +2129,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { MockAgent } from 'undici'
 import { createRedditClient } from '@/lib/reddit/client'
 import {
-  DEFAULT_REQUIREMENTS,
+  FIELD_DEFAULTS,
   getPostRequirements,
 } from '@/lib/reddit/requirements'
 
@@ -1822,17 +2182,28 @@ describe('getPostRequirements', () => {
     })
   })
 
-  it('usa os padrões quando a resposta vem vazia', async () => {
+  it('resposta 200 vazia significa comunidade sem restrições', async () => {
     pool().intercept({ path: reqPath, method: 'GET' }).reply(200, {})
     expect(await getPostRequirements(client(), 'minhacomunidade')).toEqual(
-      DEFAULT_REQUIREMENTS,
+      FIELD_DEFAULTS,
     )
   })
 
-  it('o padrão não impõe restrição que a comunidade não pediu', () => {
-    expect(DEFAULT_REQUIREMENTS.bodyRestrictionPolicy).toBe('none')
-    expect(DEFAULT_REQUIREMENTS.isFlairRequired).toBe(false)
-    expect(DEFAULT_REQUIREMENTS.domainWhitelist).toEqual([])
+  it('preenche apenas os campos ausentes de uma resposta parcial', async () => {
+    pool()
+      .intercept({ path: reqPath, method: 'GET' })
+      .reply(200, { is_flair_required: true })
+
+    const req = await getPostRequirements(client(), 'minhacomunidade')
+    expect(req.isFlairRequired).toBe(true)
+    expect(req.bodyRestrictionPolicy).toBe(FIELD_DEFAULTS.bodyRestrictionPolicy)
+    expect(req.domainWhitelist).toEqual([])
+  })
+
+  it('o default de campo não impõe restrição que a comunidade não pediu', () => {
+    expect(FIELD_DEFAULTS.bodyRestrictionPolicy).toBe('none')
+    expect(FIELD_DEFAULTS.isFlairRequired).toBe(false)
+    expect(FIELD_DEFAULTS.domainWhitelist).toEqual([])
   })
 
   it('o título nunca passa do limite do Reddit', async () => {
@@ -1861,14 +2232,41 @@ describe('getPostRequirements', () => {
     expect(req.titleBlacklistedStrings).toEqual([])
   })
 
-  it('403 devolve os padrões em vez de quebrar o formulário', async () => {
+  it('403 lança, em vez de virar requisitos permissivos', async () => {
+    // Aplicar defaults aqui liberaria um agendamento sem saber as regras.
     pool().intercept({ path: reqPath, method: 'GET' }).reply(403, {})
-    expect(await getPostRequirements(client(), 'minhacomunidade')).toEqual(
-      DEFAULT_REQUIREMENTS,
-    )
+    await expect(
+      getPostRequirements(client(), 'minhacomunidade'),
+    ).rejects.toMatchObject({ code: 'REQUIREMENTS_UNAVAILABLE' })
   })
 
-  it('erro transitório propaga', async () => {
+  it('404 lança', async () => {
+    pool().intercept({ path: reqPath, method: 'GET' }).reply(404, {})
+    await expect(
+      getPostRequirements(client(), 'minhacomunidade'),
+    ).rejects.toMatchObject({ code: 'REQUIREMENTS_UNAVAILABLE' })
+  })
+
+  it('resposta 200 que não é objeto lança', async () => {
+    pool().intercept({ path: reqPath, method: 'GET' }).reply(200, 'texto solto')
+    await expect(
+      getPostRequirements(client(), 'minhacomunidade'),
+    ).rejects.toBeTruthy()
+  })
+
+  it('a mensagem diz que não foi possível verificar, sem afirmar ausência', async () => {
+    pool().intercept({ path: reqPath, method: 'GET' }).reply(403, {})
+    try {
+      await getPostRequirements(client(), 'minhacomunidade')
+      throw new Error('deveria ter lançado')
+    } catch (e) {
+      const msg = (e as { userMessage: string }).userMessage
+      expect(msg).toMatch(/não foi possível|nao foi possivel/i)
+      expect(msg).not.toMatch(/sem restri|não (tem|possui) requisito/i)
+    }
+  })
+
+  it('erro transitório propaga com a disposição original', async () => {
     pool().intercept({ path: reqPath, method: 'GET' }).reply(503, {})
     await expect(
       getPostRequirements(client(), 'minhacomunidade'),
@@ -1906,10 +2304,14 @@ export type PostRequirements = {
 const TITLE_HARD_MAX = 300
 
 /**
- * Usado quando a comunidade não expõe requisitos. Não inventa restrição:
- * validar a mais recusaria publicações que o Reddit aceitaria.
+ * Valores para campos AUSENTES de uma resposta válida — não substituto para
+ * uma resposta que não veio.
+ *
+ * Não inventam restrição: validar a mais recusaria publicações que o Reddit
+ * aceitaria. Aplicá-los a uma falha de leitura teria o efeito oposto e pior:
+ * liberaria publicações que o Reddit vai recusar.
  */
-export const DEFAULT_REQUIREMENTS: PostRequirements = {
+export const FIELD_DEFAULTS: PostRequirements = {
   titleMinLength: null,
   titleMaxLength: TITLE_HARD_MAX,
   bodyRestrictionPolicy: 'none',
@@ -1933,9 +2335,14 @@ function politica(valor: unknown): BodyRestrictionPolicy {
 /**
  * Lê os requisitos de publicação de uma comunidade.
  *
- * Atenção: estes requisitos NÃO cobrem regras de AutoModerator. Uma
- * publicação pode passar por toda a validação local e ainda ser recusada no
- * momento da submissão.
+ * Falha de leitura NUNCA vira requisitos permissivos: se não conseguimos ler
+ * as regras, não temos como afirmar que a publicação as respeita. Quem chama
+ * decide o que fazer com a indisponibilidade — recusar o agendamento ou pedir
+ * confirmação explícita — mas essa decisão precisa ser consciente.
+ *
+ * Atenção, mesmo no caminho feliz: estes requisitos NÃO cobrem regras de
+ * AutoModerator. Uma publicação pode passar por toda a validação local e ainda
+ * ser recusada na submissão.
  */
 export async function getPostRequirements(
   client: RedditClient,
@@ -1947,15 +2354,29 @@ export async function getPostRequirements(
     const { data } = await client.request<Record<string, unknown>>({
       path: `/api/v1/${subredditName}/post_requirements`,
     })
+
+    if (data !== null && typeof data !== 'object') {
+      throw new RedditError({
+        code: 'REQUIREMENTS_UNAVAILABLE',
+        disposition: 'terminal',
+        userMessage:
+          'Não foi possível verificar as regras de publicação desta comunidade. Tente novamente.',
+      })
+    }
+
+    // A partir daqui a resposta é válida: campos ausentes recebem default.
     raw = data ?? {}
   } catch (e) {
-    // Sem acesso aos requisitos: seguimos com os padrões e deixamos o Reddit
-    // ser a autoridade final na submissão.
     if (
       e instanceof RedditError &&
       (e.code === 'NO_PERMISSION' || e.code === 'NOT_FOUND')
     ) {
-      return DEFAULT_REQUIREMENTS
+      throw new RedditError({
+        code: 'REQUIREMENTS_UNAVAILABLE',
+        disposition: 'terminal',
+        userMessage:
+          'Não foi possível verificar as regras de publicação desta comunidade. Confirme se a conta ainda a modera e tente novamente.',
+      })
     }
     throw e
   }
@@ -2607,9 +3028,15 @@ git commit -m "test: isolamento multiusuario das comunidades e docs"
 - [ ] Comunidade que sumiu vira `removed`, nunca é apagada; e volta a `active` se reaparecer
 - [ ] Falha da API no meio da sincronização não deixa o banco pela metade
 - [ ] Paginação para no teto mesmo se a API repetir o cursor
-- [ ] Flairs indisponíveis não quebram o formulário; 5xx continua propagando
-- [ ] Requisitos ausentes viram padrões que não inventam restrição
+- [ ] `200` com array vazio de flairs é resultado válido; `403`/`404` lançam `FLAIRS_UNAVAILABLE`
+- [ ] Falha ao ler requisitos lança `REQUIREMENTS_UNAVAILABLE`, nunca vira requisitos permissivos
+- [ ] Defaults preenchem apenas campos ausentes de resposta `200` válida
+- [ ] Nenhuma mensagem de indisponibilidade afirma ausência de flair ou de restrição
 - [ ] Título nunca aceita limite acima de 300 caracteres
+- [ ] **Reservas concorrentes não excedem a capacidade** — provado por teste com 10 tentativas simultâneas e capacidade 3
+- [ ] Contador de requisições em voo nunca fica negativo e zera na virada de janela
+- [ ] Toda reserva aceita tem exatamente uma devolução, inclusive em erro HTTP e falha de rede
+- [ ] As funções de orçamento não são executáveis por `anon` nem `authenticated`
 - [ ] Orçamento esgotado recusa a ação com mensagem legível, sem segurar requisição HTTP
 - [ ] `npm run build` mostra `/dashboard/communities` — não `/communities`
 - [ ] `npx supabase db advisors --local` sem apontamentos
