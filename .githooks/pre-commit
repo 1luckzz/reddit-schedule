@@ -1,0 +1,28 @@
+#!/bin/sh
+#
+# Impede commit com a verificação quebrada.
+#
+# Roda sempre: lint, typecheck e a suíte que não depende de banco — os mesmos
+# passos do CI, poucos segundos, sem exigir Docker.
+#
+# Roda condicionalmente: os testes de banco, apenas quando o Supabase local
+# responde. Assim o hook não quebra o commit de quem está sem o stack no ar,
+# em vez de forçar todo mundo a manter Docker rodando.
+#
+# Para pular deliberadamente (WIP, rebase, commit de emergência):
+#   git commit --no-verify
+#
+set -e
+
+echo "[pre-commit] lint, typecheck e testes sem banco..."
+npm run verify:fast
+
+if node -e "fetch('http://127.0.0.1:54321/rest/v1/', { signal: AbortSignal.timeout(2000) }).then(() => process.exit(0)).catch(() => process.exit(1))" 2>/dev/null; then
+  echo "[pre-commit] Supabase local no ar: rodando testes de banco..."
+  npx vitest run tests/db
+else
+  echo "[pre-commit] Supabase local ausente — testes de banco pulados."
+  echo "[pre-commit] Antes de fechar uma etapa: npx supabase start && npm run verify"
+fi
+
+echo "[pre-commit] ok"
