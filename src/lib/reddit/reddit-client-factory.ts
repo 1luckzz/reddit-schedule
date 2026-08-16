@@ -10,6 +10,7 @@ import {
   type VerifiedAccount,
 } from '@/lib/auth/ownership'
 import { refreshAccessToken } from './auth'
+import { reconcileBudget, reserveBudget } from './budget'
 import { createRedditClient, type RedditClient } from './client'
 import { RedditError } from './errors'
 import type { RedditTokenResponse } from './types'
@@ -147,5 +148,10 @@ export async function getRedditClient(
   const dispatcher =
     opts.dispatcher ?? createDispatcherFor(await getNetworkConfig(verified))
 
-  return createRedditClient({ accessToken: secrets.accessToken, dispatcher })
+  return createRedditClient({
+    accessToken: secrets.accessToken,
+    dispatcher,
+    onBeforeRequest: reserveBudget,
+    onAfterRequest: reconcileBudget,
+  })
 }

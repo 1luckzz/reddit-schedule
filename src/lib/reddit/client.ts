@@ -31,10 +31,30 @@ export type RedditClient = {
 export function createRedditClient(opts: {
   accessToken: string
   dispatcher?: Dispatcher
+  /**
+   * Reserva capacidade antes da requisição. Pode lançar para recusar a
+   * chamada — é assim que o orçamento esgotado impede o tráfego.
+   */
+  onBeforeRequest?: () => Promise<void>
+  /**
+   * Devolve a reserva. Recebe o snapshot dos headers, ou null quando não houve
+   * resposta legível. Falhas aqui nunca derrubam a requisição.
+   *
+   * INVARIANTE: toda reserva aceita precisa de exatamente uma devolução. Um
+   * caminho novo de saída em `request` também precisa chamar isto, senão o
+   * contador de requisições em voo só cresce e o orçamento se pausa sozinho.
+   */
+  onAfterRequest?: (snapshot: RateLimitSnapshot | null) => void | Promise<void>
 }): RedditClient {
   return {
     async request<T>(req: RedditRequest) {
       const { REDDIT_USER_AGENT } = getRedditEnv()
+
+      // O erro de orçamento precisa subir para o chamador, então este await
+      // não é engolido.
+      if (opts.onBeforeRequest) {
+        await opts.onBeforeRequest()
+      }
       const method = req.method ?? 'GET'
       const hasSideEffect = req.hasSideEffect ?? false
 
@@ -71,6 +91,10 @@ export function createRedditClient(opts: {
           dispatcher: opts.dispatcher,
         })
       } catch (err) {
+        // Sem resposta: devolve a reserva sem tocar nos números do Reddit.
+        if (opts.onAfterRequest) {
+          void Promise.resolve(opts.onAfterRequest(null)).catch(() => {})
+        }
         throw classifyNetwork(err, sideEffectAttempted)
       }
 
@@ -79,6 +103,11 @@ export function createRedditClient(opts: {
         rawHeaders[key.toLowerCase()] = value
       })
       const rateLimit = readRateLimit(rawHeaders)
+
+      if (opts.onAfterRequest) {
+        // Reconciliar é telemetria: não pode custar a operação do usuário.
+        void Promise.resolve(opts.onAfterRequest(rateLimit)).catch(() => {})
+      }
 
       let payload: unknown = null
       let corpoIlegivel = false
