@@ -35,24 +35,53 @@ function clientHash(): string {
  * Sem isso, duas requisições simultâneas leriam o mesmo `remaining` e
  * reservariam a mesma capacidade.
  *
+ * **Fail-closed.** Se o mecanismo de orçamento estiver indisponível, a chamada
+ * externa não acontece: erro de banco vira `BUDGET_UNAVAILABLE` retryable.
+ * Isso é diferente de `remaining` desconhecido — ali o mecanismo funcionou e
+ * respondeu "pode ir", apenas ainda não sabemos o saldo, e a reserva otimista
+ * é coberta pelo 429 do Reddit. Aqui não sabemos nem se estamos contando.
+ *
  * Toda reserva bem-sucedida PRECISA ser devolvida por reconcileBudget, mesmo
  * quando a requisição falha — senão o contador de requisições em voo só sobe.
  */
+function budgetUnavailable(): RedditError {
+  return new RedditError({
+    code: 'BUDGET_UNAVAILABLE',
+    disposition: 'retryable',
+    retryAfterSeconds: 30,
+    userMessage:
+      'Não foi possível verificar o limite de requisições ao Reddit agora. Tente novamente em instantes.',
+  })
+}
+
 export async function reserveBudget(): Promise<void> {
   const admin = createAdminSupabase()
-  const { data, error } = await admin.rpc('reserve_api_budget', {
-    p_client_id_hash: clientHash(),
-    p_threshold: BUDGET_THRESHOLD,
-  })
 
-  if (error) {
-    // Falha ao falar com o orçamento não deve impedir o trabalho: o 429 do
-    // Reddit continua sendo a rede de proteção.
-    return
+  let data: unknown
+  let error: unknown
+
+  try {
+    ;({ data, error } = await admin.rpc('reserve_api_budget', {
+      p_client_id_hash: clientHash(),
+      p_threshold: BUDGET_THRESHOLD,
+    }))
+  } catch {
+    // Fail-closed: sem conseguir reservar, não emitimos a requisição externa.
+    // Deixar passar transformaria uma falha do nosso controle em tráfego não
+    // contabilizado contra o limite do Reddit.
+    throw budgetUnavailable()
   }
 
-  const resultado = Array.isArray(data) ? data[0] : data
-  if (!resultado || resultado.allowed) return
+  if (error) throw budgetUnavailable()
+
+  const resultado = (Array.isArray(data) ? data[0] : data) as
+    | { allowed: boolean; paused_until: string | null }
+    | undefined
+
+  // Resposta inesperada é indisponibilidade, não permissão.
+  if (!resultado) throw budgetUnavailable()
+
+  if (resultado.allowed) return
 
   const pausadoAte = resultado.paused_until
     ? new Date(resultado.paused_until as string)

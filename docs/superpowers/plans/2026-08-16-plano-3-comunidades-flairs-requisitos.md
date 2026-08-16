@@ -376,7 +376,20 @@ requisições em voo desde o último snapshot:
 reservas de uma janela encerrada não significam mais nada.
 
 Quando `remaining` é desconhecido (nenhuma resposta ainda), a reserva é
-permitida: o Reddit responde 429 no pior caso, e 429 é `retryable`.
+permitida: o mecanismo funcionou e autorizou, apenas ainda não sabemos o saldo,
+e o 429 do Reddit cobre o pior caso.
+
+**Fail-closed quando o mecanismo está indisponível.** Se a função de reserva
+não puder ser executada — erro de banco, RPC fora, resposta inesperada — a
+requisição externa **não sai**, e o erro é `BUDGET_UNAVAILABLE` (retryable).
+Isso é categoricamente diferente de `remaining` desconhecido: ali sabemos que
+estamos contando e só não sabemos o saldo; aqui não sabemos nem se estamos
+contando. Deixar passar transformaria uma falha do nosso controle em tráfego
+não contabilizado contra o limite da aplicação.
+
+Já `reconcileBudget` não é fail-closed: falha na devolução apenas deixa o
+contador em voo mais alto, o que naturalmente aperta o orçamento — o sistema
+degrada para o lado seguro sozinho.
 
 - [ ] **Step 1: Criar a migration**
 
