@@ -53,7 +53,12 @@ describe('rotas geradas', () => {
   it('todo item de navegação já implementado aponta para rota existente', async () => {
     const { NAV_ITEMS } = await import('@/components/nav/nav-items')
     // As demais páginas chegam nos Planos 3 a 5; estas já devem existir.
-    const implementadas = ['/dashboard', '/dashboard/accounts']
+    // As demais páginas chegam nos Planos 4 e 5.
+    const implementadas = [
+      '/dashboard',
+      '/dashboard/accounts',
+      '/dashboard/communities',
+    ]
 
     for (const href of implementadas) {
       expect(NAV_ITEMS.map((i) => i.href)).toContain(href)

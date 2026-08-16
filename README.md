@@ -121,6 +121,13 @@ existe justamente para detectar isso — se quebrar, o protocolo sai da lista em
 
 Uma etapa do Plano 2 **não pôde ser executada** e continua em aberto:
 
+- [ ] **Sincronização de comunidades contra a API real.** Depende das mesmas
+      credenciais do item abaixo. Roteiro: conectar uma conta, abrir
+      **Comunidades**, clicar em **Sincronizar**, e conferir que as comunidades
+      moderadas aparecem com o tipo de submissão correto. Confirmar também o
+      formato real de `link_flair_v2` e de `post_requirements` — são os únicos
+      pontos onde a API pode divergir dos mocks.
+
 - [ ] **Fluxo OAuth de ponta a ponta com o Reddit real.** Requer
       `REDDIT_CLIENT_ID` e `REDDIT_CLIENT_SECRET` preenchidos no `.env.local`
       (ver Fase -1). Roteiro:
@@ -139,16 +146,34 @@ credenciais reais: a API do Reddit é simulada com `undici.MockAgent`.
 
 ## Estado atual
 
-**Planos 1 e 2 concluídos:** autenticação do painel, banco com RLS,
-criptografia, sanitização de logs, OAuth do Reddit, gestão de contas e
-configuração de rede por conta. As demais funcionalidades chegam nos Planos
-3 a 5:
+**Planos 1, 2 e 3 concluídos:** autenticação do painel, banco com RLS,
+criptografia, sanitização de logs, OAuth do Reddit, gestão de contas,
+configuração de rede por conta, sincronização das comunidades moderadas,
+leitura de flairs e de requisitos de publicação, e orçamento global de rate
+limit. As demais funcionalidades chegam nos Planos 4 e 5:
 
 | Plano | Escopo |
 |---|---|
-| 3 | Comunidades, flairs, requisitos de publicação |
 | 4 | Criar e agendar publicações, comentários programados |
-| 5 | Worker de publicação, calendário, fila, histórico |
+| 5 | Worker de publicação, calendário, fila, histórico, revisão |
+
+### Decisões do Plano 3
+
+- Comunidades são um espelho da API, não entrada do usuário: `authenticated`
+  tem apenas `SELECT` sobre `subreddits`. Comunidades que somem viram
+  `removed`, nunca são apagadas, porque publicações agendadas apontam para elas.
+- **Falha ao ler regras nunca vira permissão.** Se `post_requirements` ou
+  `link_flair_v2` não puderem ser lidos, a operação falha com mensagem clara em
+  vez de assumir "sem restrições" — assumir liberaria exatamente a publicação
+  que o Reddit vai recusar. Lista vazia só é resultado quando o Reddit
+  respondeu com sucesso.
+- Os requisitos lidos da API **não** cobrem regras de AutoModerator. Uma
+  publicação pode passar por toda a validação local e ainda ser recusada na
+  submissão — a resposta do Reddit é sempre a autoridade final.
+- O orçamento de requisições é global por `client_id`, com reserva atômica em
+  função SQL. Enquanto o saldo é desconhecido, apenas uma requisição fica em
+  voo; se o mecanismo de orçamento estiver indisponível, a chamada externa não
+  acontece (fail-closed).
 
 ## Proteção de processo
 
