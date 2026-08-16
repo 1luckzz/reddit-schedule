@@ -77,11 +77,91 @@ describe('reconciliação do orçamento', () => {
   })
 })
 
-describe('reserva atômica', () => {
-  it('sem orçamento conhecido, a reserva é permitida', async () => {
+describe('bootstrap: orçamento ainda desconhecido', () => {
+  it('a primeira reserva sai normalmente', async () => {
     const { reserveBudget } = await import('@/lib/reddit/budget')
     await expect(reserveBudget()).resolves.toBeUndefined()
   })
+
+  it('CORRIDA: com saldo desconhecido, apenas 1 reserva é aceita', async () => {
+    // Quota desconhecida não pode virar concorrência ilimitada: uma requisição
+    // sai para descobrir o limite, as demais esperam por ela.
+    const { reserveBudget, getBudget } = await import('@/lib/reddit/budget')
+
+    const tentativas = await Promise.allSettled(
+      Array.from({ length: 8 }, () => reserveBudget()),
+    )
+
+    const aceitas = tentativas.filter((r) => r.status === 'fulfilled')
+    expect(aceitas).toHaveLength(1)
+    expect(tentativas.filter((r) => r.status === 'rejected')).toHaveLength(7)
+    expect((await getBudget())!.reserved).toBe(1)
+  })
+
+  it('as recusadas identificam o motivo como bootstrap, não limite atingido', async () => {
+    const { reserveBudget } = await import('@/lib/reddit/budget')
+    await reserveBudget()
+
+    await expect(reserveBudget()).rejects.toMatchObject({
+      code: 'BUDGET_BOOTSTRAP',
+      disposition: 'retryable',
+    })
+  })
+
+  it('a mensagem de bootstrap não afirma que o limite foi atingido', async () => {
+    const { reserveBudget } = await import('@/lib/reddit/budget')
+    await reserveBudget()
+
+    try {
+      await reserveBudget()
+      throw new Error('deveria ter lançado')
+    } catch (e) {
+      const msg = (e as { userMessage: string }).userMessage
+      expect(msg).toMatch(/verificando|instantes|segundos/i)
+      expect(msg).not.toMatch(/limite de requisições ao Reddit foi atingido/i)
+    }
+  })
+
+  it('depois dos headers, a concorrência passa a seguir o remaining conhecido', async () => {
+    const { reserveBudget, reconcileBudget, BUDGET_THRESHOLD } = await import(
+      '@/lib/reddit/budget'
+    )
+
+    // Primeira chamada: sai no bootstrap e volta com os headers.
+    await reserveBudget()
+    await reconcileBudget({
+      used: 10,
+      remaining: BUDGET_THRESHOLD + 4,
+      resetSeconds: 300,
+    })
+
+    // Agora o saldo é conhecido: cabem 4 reservas simultâneas, não 1.
+    const tentativas = await Promise.allSettled(
+      Array.from({ length: 8 }, () => reserveBudget()),
+    )
+    expect(tentativas.filter((r) => r.status === 'fulfilled')).toHaveLength(4)
+  })
+
+  it('falha sem headers libera a reserva e permite nova tentativa', async () => {
+    const { reserveBudget, reconcileBudget, getBudget } = await import(
+      '@/lib/reddit/budget'
+    )
+
+    await reserveBudget()
+    // A requisição falhou sem resposta legível: devolve a reserva sem gravar
+    // números que não temos.
+    await reconcileBudget(null)
+
+    const budget = await getBudget()
+    expect(budget!.reserved).toBe(0)
+    expect(budget!.remaining).toBeNull()
+
+    // E o sistema continua em bootstrap, aceitando a próxima tentativa.
+    await expect(reserveBudget()).resolves.toBeUndefined()
+  })
+})
+
+describe('reserva atômica', () => {
 
   it('cada reserva incrementa o contador de requisições em voo', async () => {
     const { reserveBudget, getBudget } = await import('@/lib/reddit/budget')

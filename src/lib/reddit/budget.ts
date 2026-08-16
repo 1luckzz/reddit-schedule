@@ -38,8 +38,14 @@ function clientHash(): string {
  * **Fail-closed.** Se o mecanismo de orçamento estiver indisponível, a chamada
  * externa não acontece: erro de banco vira `BUDGET_UNAVAILABLE` retryable.
  * Isso é diferente de `remaining` desconhecido — ali o mecanismo funcionou e
- * respondeu "pode ir", apenas ainda não sabemos o saldo, e a reserva otimista
- * é coberta pelo 429 do Reddit. Aqui não sabemos nem se estamos contando.
+ * respondeu, apenas ainda não sabemos o saldo. Aqui não sabemos nem se
+ * estamos contando.
+ *
+ * **Bootstrap conservador.** Enquanto o saldo é desconhecido, apenas UMA
+ * requisição fica em voo por client_id: a primeira sai normalmente e seus
+ * headers revelam o limite; as concorrentes recebem `BUDGET_BOOTSTRAP` e
+ * tentam de novo em segundos. Quota desconhecida não pode significar
+ * concorrência ilimitada.
  *
  * Toda reserva bem-sucedida PRECISA ser devolvida por reconcileBudget, mesmo
  * quando a requisição falha — senão o contador de requisições em voo só sobe.
@@ -75,7 +81,7 @@ export async function reserveBudget(): Promise<void> {
   if (error) throw budgetUnavailable()
 
   const resultado = (Array.isArray(data) ? data[0] : data) as
-    | { allowed: boolean; paused_until: string | null }
+    | { allowed: boolean; paused_until: string | null; reason?: string }
     | undefined
 
   // Resposta inesperada é indisponibilidade, não permissão.
@@ -83,8 +89,20 @@ export async function reserveBudget(): Promise<void> {
 
   if (resultado.allowed) return
 
+  // Ainda descobrindo o limite: uma requisição já está em voo e vai revelar o
+  // saldo real. Esperar poucos segundos costuma bastar.
+  if (resultado.reason === 'bootstrap') {
+    throw new RedditError({
+      code: 'BUDGET_BOOTSTRAP',
+      disposition: 'retryable',
+      retryAfterSeconds: 5,
+      userMessage:
+        'Verificando o limite de requisições ao Reddit. Tente novamente em alguns segundos.',
+    })
+  }
+
   const pausadoAte = resultado.paused_until
-    ? new Date(resultado.paused_until as string)
+    ? new Date(resultado.paused_until)
     : null
   const segundos = pausadoAte
     ? Math.max(1, Math.ceil((pausadoAte.getTime() - Date.now()) / 1000))
