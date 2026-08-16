@@ -22,7 +22,9 @@ As dos Planos 1 a 3 continuam valendo. Estas se somam:
 - **Falha ao ler requisitos bloqueia o agendamento.** Herdado do Plano 3: `REQUIREMENTS_UNAVAILABLE` nunca vira validação permissiva. O formulário recusa e explica, em vez de agendar às cegas.
 - **`scheduled_at` é sempre `timestamptz`** (UTC no banco). A coluna `timezone` guarda o fuso digitado, para reexibir e reeditar corretamente.
 - **Horário inexistente por DST é recusado**, nunca deslocado em silêncio.
-- **Colunas do worker são inalcançáveis pelo usuário**: `reddit_post_id`, `locked_*`, `submit_attempted_at`, `retry_count` e afins só mudam pelo `service_role`, com grant por coluna **e** trigger — as duas barreiras independentes do Plano 2.
+- **As tabelas de agendamento são somente leitura pelo Data API.** `authenticated` tem apenas `SELECT`; criar, reagendar e cancelar passam exclusivamente pelas RPCs. Conceder INSERT ou UPDATE direto daria ao cliente um caminho para contornar `post_requirements`, a confirmação de link+texto e a validação de horário.
+- **RPCs de mutação são `SECURITY DEFINER`** com `owner_id` vindo de `auth.uid()`, checagem explícita de posse no corpo, `search_path` fixo e `EXECUTE` revogado de `PUBLIC` e `anon`.
+- **Colunas do worker permanecem inalcançáveis**: `reddit_post_id`, `locked_*`, `submit_attempted_at`, `retry_count` e afins só mudam pelo `service_role`, protegidas também por trigger.
 - **`needs_review` nunca volta para `scheduled` automaticamente.** Proibido por trigger, não por convenção.
 - **Post e comentário nascem juntos ou não nascem.** Uma função SQL transacional; nada de dois inserts sequenciais da aplicação.
 - **Teste que toca o banco vive em `tests/db/`.**
@@ -204,17 +206,21 @@ describe('RLS de scheduled_posts', () => {
     expect(data).toHaveLength(0)
   })
 
-  it('o usuário insere para si mesmo', async () => {
+  it('o usuário não insere direto, nem para si mesmo', async () => {
+    // Criar publicação passa exclusivamente pela RPC da Task 5, que aplica
+    // post_requirements e as demais regras do domínio.
     const { error } = await userClient(userA.accessToken)
       .from('scheduled_posts')
       .insert(postBase())
-    expect(error).toBeNull()
+    expect(error).not.toBeNull()
   })
 
-  it('o usuário não insere no nome de outro', async () => {
+  it('o usuário não altera direto', async () => {
+    const id = await criarPost()
     const { error } = await userClient(userA.accessToken)
       .from('scheduled_posts')
-      .insert(postBase({ owner_id: userB.id }))
+      .update({ title: 'alterado por fora' })
+      .eq('id', id)
     expect(error).not.toBeNull()
   })
 
@@ -229,31 +235,16 @@ describe('RLS de scheduled_posts', () => {
 })
 
 describe('colunas gerenciadas pelo worker', () => {
-  it('authenticated não tem UPDATE nas colunas de execução', async () => {
+  it('authenticated não tem UPDATE em coluna nenhuma', async () => {
+    // Mutação passa exclusivamente pelas RPCs da Task 5 e da Task 7.
     const { rows } = await withSql((db) =>
       db.query(
         `select column_name from information_schema.column_privileges
          where grantee = 'authenticated' and table_name = 'scheduled_posts'
-           and privilege_type = 'UPDATE' order by column_name`,
+           and privilege_type = 'UPDATE'`,
       ),
     )
-    const editaveis = rows.map((r) => r.column_name)
-    for (const proibida of [
-      'reddit_post_id',
-      'reddit_permalink',
-      'locked_at',
-      'locked_by',
-      'submit_attempted_at',
-      'retry_count',
-      'published_at',
-      'owner_id',
-      'reddit_account_id',
-      'subreddit_id',
-    ]) {
-      expect(editaveis).not.toContain(proibida)
-    }
-    expect(editaveis).toContain('title')
-    expect(editaveis).toContain('scheduled_at')
+    expect(rows).toHaveLength(0)
   })
 
   it('o trigger recusa alteração das colunas de execução', async () => {
@@ -468,11 +459,14 @@ create unique index scheduled_posts_reddit_post_idx
 
 alter table public.scheduled_posts enable row level security;
 
-grant select, insert on public.scheduled_posts to authenticated;
-grant update (
-  title, url, body, flair_id, flair_text, post_kind,
-  nsfw, spoiler, scheduled_at, timezone, status
-) on public.scheduled_posts to authenticated;
+-- ---------------------------------------------------------------
+-- Somente leitura pelo Data API.
+-- ---------------------------------------------------------------
+-- Criar, reagendar e cancelar passam exclusivamente pelas funções da Task 5 e
+-- da Task 7. Conceder INSERT ou UPDATE direto aqui permitiria ao cliente
+-- contornar post_requirements, a confirmação de link+texto e a validação de
+-- horário — todas as regras do domínio moram naquelas funções.
+grant select on public.scheduled_posts to authenticated;
 grant all on public.scheduled_posts to service_role;
 
 create policy "scheduled_posts_select_own"
@@ -480,6 +474,8 @@ create policy "scheduled_posts_select_own"
   to authenticated
   using ( (select auth.uid()) = owner_id );
 
+-- As policies de escrita ficam, mesmo sem grant correspondente: são a segunda
+-- barreira se um grant for concedido por engano numa migration futura.
 create policy "scheduled_posts_insert_own"
   on public.scheduled_posts for insert
   to authenticated
@@ -959,9 +955,9 @@ create index scheduled_comments_owner_idx
 
 alter table public.scheduled_comments enable row level security;
 
-grant select, insert on public.scheduled_comments to authenticated;
-grant update (body, mode, delay_minutes, scheduled_at, status)
-  on public.scheduled_comments to authenticated;
+-- Somente leitura, pelo mesmo motivo de scheduled_posts: o comentário nasce
+-- junto do post, na função transacional, e é cancelado junto com ele.
+grant select on public.scheduled_comments to authenticated;
 grant all on public.scheduled_comments to service_role;
 
 create policy "scheduled_comments_select_own"
@@ -1065,27 +1061,55 @@ git commit -m "feat: schema de comentarios programados"
 
 **Interfaces:**
 - Produces:
-  - `type WallTime` — `{ date: string; time: string; timeZone: string }` (`'2026-08-16'`, `'10:30'`)
-  - `toUtc(wall: WallTime): { utc: Date; ambiguous: boolean }`
+  - `type WallTime` — `{ date: string; time: string; timeZone: string }`
+  - `type Occurrence` — `{ utc: Date; offsetMinutes: number; offsetLabel: string }`
+  - `listOccurrences(wall: WallTime): Occurrence[]` — 0, 1 ou 2 instantes
+  - `toUtc(wall, opts?: { occurrence?: number }): Date`
   - `fromUtc(utc: Date, timeZone: string): { date: string; time: string }`
   - `class NonexistentTimeError extends Error`
-  - `SUPPORTED_TIME_ZONES` — lista para o seletor da UI
+  - `class AmbiguousTimeError extends Error` — carrega as ocorrências
+  - `SUPPORTED_TIME_ZONES`
 
-**O que a verificação empírica mostrou** (undici à parte, isto é sobre `@date-fns/tz` 1.5):
+**O algoritmo, e por que não usa "mais uma hora".** Transições de fuso não têm
+duração fixa: Lord Howe Island muda **30 minutos**, e mudanças históricas de
+offset têm valores arbitrários. Um algoritmo que soma uma hora falha nesses
+casos.
 
-| Caso | `TZDate` faz | Nossa decisão |
+O método correto enumera os candidatos a partir dos offsets vigentes **antes e
+depois** do dia em questão:
+
+1. interpretar o horário digitado como se fosse UTC (`wallAsUTC`);
+2. medir o offset do fuso 24 h antes e 24 h depois desse instante;
+3. para cada offset, calcular o candidato `wallAsUTC - offset`;
+4. manter o candidato apenas se o offset real naquele instante for igual ao
+   usado para calculá-lo — é o teste de consistência que descarta os
+   impossíveis;
+5. remover duplicatas e ordenar.
+
+O resultado diz tudo, sem pressupor duração alguma:
+
+| Ocorrências | Significado | Comportamento |
 |---|---|---|
-| Horário normal | round-trip exato | aceitar |
-| **Gap** — `2026-03-08 02:30` em `America/New_York` não existe | desloca para `03:30` silenciosamente | **recusar** com `NonexistentTimeError` |
-| **Ambíguo** — `2026-11-01 01:30` em `America/New_York` ocorre duas vezes | escolhe a primeira ocorrência | aceitar a primeira, sinalizando `ambiguous: true` para a UI avisar |
+| 0 | horário não existe (relógio saltou) | **recusar** com `NonexistentTimeError` |
+| 1 | horário comum | converter |
+| 2 | horário ocorre duas vezes | **o usuário escolhe**; sem escolha, `AmbiguousTimeError` |
 
-Deslocar em silêncio publicaria uma hora depois do combinado sem ninguém saber.
-Recusar a ambiguidade seria exagero: a diferença é de uma hora e a primeira
-ocorrência é a interpretação usual — mas o usuário merece saber.
+**Verificado empiricamente antes de escrever este plano**, com transições de
+60 e de 30 minutos:
 
-Detecção, sem depender de API que não existe:
-- **gap**: converter para UTC e voltar; se o horário local resultante difere do digitado, o horário não existe;
-- **ambiguidade**: se `utc` e `utc + 1h` produzem o mesmo horário local, há duas instâncias.
+```
+normal SP          1 -> normal       2026-08-16T13:30Z (UTC-03:00)
+NY gap             0 -> INEXISTENTE
+NY ambiguo         2 -> AMBIGUO      05:30Z (UTC-04:00) | 06:30Z (UTC-05:00)
+LordHowe gap       0 -> INEXISTENTE
+LordHowe ambiguo   2 -> AMBIGUO      14:45Z (UTC+11:00) | 15:15Z (UTC+10:30)
+```
+
+Note a diferença de **30 minutos** entre as ocorrências de Lord Howe: é
+exatamente o caso que a soma de uma hora erraria.
+
+A UI mostra as duas opções com o offset de cada uma, e o `scheduled_at`
+gravado é sempre um instante UTC inequívoco.
 
 - [ ] **Step 1: Instalar as dependências**
 
@@ -1099,7 +1123,9 @@ npm install date-fns@4.4.0 @date-fns/tz@1.5.0
 // tests/scheduling/timezone.test.ts
 import { describe, expect, it } from 'vitest'
 import {
+  AmbiguousTimeError,
   fromUtc,
+  listOccurrences,
   NonexistentTimeError,
   SUPPORTED_TIME_ZONES,
   toUtc,
@@ -1107,40 +1133,63 @@ import {
 
 const SP = 'America/Sao_Paulo'
 const NY = 'America/New_York'
+/** Transição de 30 minutos: o caso que quebra algoritmos que somam 1 hora. */
+const LORD_HOWE = 'Australia/Lord_Howe'
 
-describe('toUtc em horário sem DST', () => {
+describe('horário normal', () => {
   it('converte horário de São Paulo para UTC', () => {
-    const { utc } = toUtc({ date: '2026-08-16', time: '10:30', timeZone: SP })
+    const utc = toUtc({ date: '2026-08-16', time: '10:30', timeZone: SP })
     // São Paulo é UTC-3 o ano todo desde 2019.
     expect(utc.toISOString()).toBe('2026-08-16T13:30:00.000Z')
   })
 
-  it('faz round-trip preservando o horário local', () => {
-    const wall = { date: '2026-08-16', time: '10:30', timeZone: SP }
-    const { utc } = toUtc(wall)
-    expect(fromUtc(utc, SP)).toEqual({ date: '2026-08-16', time: '10:30' })
+  it('tem exatamente uma ocorrência', () => {
+    const occ = listOccurrences({
+      date: '2026-08-16',
+      time: '10:30',
+      timeZone: SP,
+    })
+    expect(occ).toHaveLength(1)
+    expect(occ[0].offsetLabel).toBe('UTC-03:00')
   })
 
-  it('não sinaliza ambiguidade em horário comum', () => {
-    expect(toUtc({ date: '2026-08-16', time: '10:30', timeZone: SP }).ambiguous)
-      .toBe(false)
+  it('faz round-trip preservando o horário local', () => {
+    const wall = { date: '2026-08-16', time: '10:30', timeZone: SP }
+    expect(fromUtc(toUtc(wall), SP)).toEqual({
+      date: '2026-08-16',
+      time: '10:30',
+    })
   })
 
   it('converte meia-noite corretamente', () => {
-    const { utc } = toUtc({ date: '2026-08-16', time: '00:00', timeZone: SP })
+    const utc = toUtc({ date: '2026-08-16', time: '00:00', timeZone: SP })
     expect(fromUtc(utc, SP)).toEqual({ date: '2026-08-16', time: '00:00' })
   })
 
   it('atravessa a virada do dia em UTC', () => {
     // 22:00 em SP é 01:00 do dia seguinte em UTC.
-    const { utc } = toUtc({ date: '2026-08-16', time: '22:00', timeZone: SP })
+    const utc = toUtc({ date: '2026-08-16', time: '22:00', timeZone: SP })
     expect(utc.toISOString()).toBe('2026-08-17T01:00:00.000Z')
+  })
+
+  it('não depende do fuso da máquina que roda o código', () => {
+    // fromUtc precisa usar os getters UTC sobre um instante deslocado; usar
+    // getHours() traria o fuso do servidor, que no VPS não é o do usuário.
+    const utc = new Date('2026-08-16T13:30:00.000Z')
+    expect(fromUtc(utc, SP).time).toBe('10:30')
+    expect(fromUtc(utc, 'UTC').time).toBe('13:30')
   })
 })
 
-describe('toUtc no salto de DST (horário inexistente)', () => {
-  it('recusa 02:30 em 08/03/2026 em Nova York', () => {
-    // O relógio pula de 02:00 para 03:00: esse horário não existe.
+describe('horário inexistente (relógio salta para frente)', () => {
+  it('não tem nenhuma ocorrência', () => {
+    // 08/03/2026 em Nova York: 02:00 vira 03:00.
+    expect(
+      listOccurrences({ date: '2026-03-08', time: '02:30', timeZone: NY }),
+    ).toHaveLength(0)
+  })
+
+  it('recusa em vez de deslocar silenciosamente', () => {
     expect(() =>
       toUtc({ date: '2026-03-08', time: '02:30', timeZone: NY }),
     ).toThrow(NonexistentTimeError)
@@ -1156,46 +1205,140 @@ describe('toUtc no salto de DST (horário inexistente)', () => {
     }
   })
 
-  it('aceita 01:30, que existe', () => {
+  it('aceita os horários vizinhos, que existem', () => {
     expect(() =>
       toUtc({ date: '2026-03-08', time: '01:30', timeZone: NY }),
     ).not.toThrow()
-  })
-
-  it('aceita 03:30, que existe', () => {
     expect(() =>
       toUtc({ date: '2026-03-08', time: '03:30', timeZone: NY }),
     ).not.toThrow()
   })
 })
 
-describe('toUtc no retorno de DST (horário ambíguo)', () => {
-  it('sinaliza ambiguidade em 01:30 de 01/11/2026 em Nova York', () => {
-    // Esse horário acontece duas vezes: uma em EDT, outra em EST.
-    const { ambiguous } = toUtc({
-      date: '2026-11-01',
-      time: '01:30',
-      timeZone: NY,
-    })
-    expect(ambiguous).toBe(true)
+describe('horário repetido (relógio volta)', () => {
+  const ambiguo = { date: '2026-11-01', time: '01:30', timeZone: NY }
+
+  it('tem duas ocorrências', () => {
+    expect(listOccurrences(ambiguo)).toHaveLength(2)
   })
 
-  it('escolhe a primeira ocorrência', () => {
-    const { utc } = toUtc({ date: '2026-11-01', time: '01:30', timeZone: NY })
-    // Primeira ocorrência ainda em horário de verão (UTC-4) => 05:30Z.
+  it('as ocorrências trazem offsets distintos para a UI mostrar', () => {
+    const occ = listOccurrences(ambiguo)
+    expect(occ[0].offsetLabel).toBe('UTC-04:00')
+    expect(occ[1].offsetLabel).toBe('UTC-05:00')
+  })
+
+  it('as ocorrências estão em ordem cronológica', () => {
+    const occ = listOccurrences(ambiguo)
+    expect(occ[0].utc.getTime()).toBeLessThan(occ[1].utc.getTime())
+  })
+
+  it('sem escolha explícita, exige que o usuário decida', () => {
+    expect(() => toUtc(ambiguo)).toThrow(AmbiguousTimeError)
+  })
+
+  it('o erro carrega as opções para o formulário exibir', () => {
+    try {
+      toUtc(ambiguo)
+      throw new Error('deveria ter lançado')
+    } catch (e) {
+      const erro = e as AmbiguousTimeError
+      expect(erro.occurrences).toHaveLength(2)
+      expect(erro.occurrences[0].offsetLabel).toBeTruthy()
+    }
+  })
+
+  it('SELEÇÃO: a primeira ocorrência é o horário de verão', () => {
+    const utc = toUtc(ambiguo, { occurrence: 0 })
     expect(utc.toISOString()).toBe('2026-11-01T05:30:00.000Z')
   })
 
-  it('não lança: ambiguidade é aviso, não erro', () => {
-    expect(() =>
-      toUtc({ date: '2026-11-01', time: '01:30', timeZone: NY }),
-    ).not.toThrow()
+  it('SELEÇÃO: a segunda ocorrência é o horário padrão', () => {
+    const utc = toUtc(ambiguo, { occurrence: 1 })
+    expect(utc.toISOString()).toBe('2026-11-01T06:30:00.000Z')
   })
 
-  it('horário fora da janela ambígua não é sinalizado', () => {
+  it('as duas escolhas produzem o mesmo horário local', () => {
+    // É justamente por isso que são ambíguas.
+    for (const i of [0, 1]) {
+      expect(fromUtc(toUtc(ambiguo, { occurrence: i }), NY).time).toBe('01:30')
+    }
+  })
+
+  it('recusa índice de ocorrência fora da faixa', () => {
+    expect(() => toUtc(ambiguo, { occurrence: 2 })).toThrow()
+    expect(() => toUtc(ambiguo, { occurrence: -1 })).toThrow()
+  })
+
+  it('horário fora da janela ambígua tem só uma ocorrência', () => {
     expect(
-      toUtc({ date: '2026-11-01', time: '03:30', timeZone: NY }).ambiguous,
-    ).toBe(false)
+      listOccurrences({ date: '2026-11-01', time: '03:30', timeZone: NY }),
+    ).toHaveLength(1)
+  })
+})
+
+describe('transição que NÃO é de uma hora', () => {
+  // Lord Howe Island muda 30 minutos. Um algoritmo que soma 1 h erra aqui —
+  // é o caso que justifica enumerar candidatos por offset.
+
+  it('detecta horário inexistente numa transição de 30 minutos', () => {
+    // 04/10/2026: 02:00 vira 02:30.
+    expect(
+      listOccurrences({
+        date: '2026-10-04',
+        time: '02:15',
+        timeZone: LORD_HOWE,
+      }),
+    ).toHaveLength(0)
+  })
+
+  it('detecta horário repetido numa transição de 30 minutos', () => {
+    // 05/04/2026: 02:00 volta para 01:30.
+    expect(
+      listOccurrences({
+        date: '2026-04-05',
+        time: '01:45',
+        timeZone: LORD_HOWE,
+      }),
+    ).toHaveLength(2)
+  })
+
+  it('as duas ocorrências diferem em 30 minutos, não em 60', () => {
+    const occ = listOccurrences({
+      date: '2026-04-05',
+      time: '01:45',
+      timeZone: LORD_HOWE,
+    })
+    const diferenca = occ[1].utc.getTime() - occ[0].utc.getTime()
+    expect(diferenca).toBe(30 * 60_000)
+  })
+
+  it('os offsets refletem a diferença de meia hora', () => {
+    const occ = listOccurrences({
+      date: '2026-04-05',
+      time: '01:45',
+      timeZone: LORD_HOWE,
+    })
+    expect(occ[0].offsetLabel).toBe('UTC+11:00')
+    expect(occ[1].offsetLabel).toBe('UTC+10:30')
+  })
+
+  it('horário comum nesse fuso continua com uma ocorrência', () => {
+    const occ = listOccurrences({
+      date: '2026-06-10',
+      time: '10:00',
+      timeZone: LORD_HOWE,
+    })
+    expect(occ).toHaveLength(1)
+    expect(occ[0].offsetLabel).toBe('UTC+10:30')
+  })
+
+  it('round-trip funciona em fuso de offset fracionário', () => {
+    const wall = { date: '2026-06-10', time: '10:00', timeZone: LORD_HOWE }
+    expect(fromUtc(toUtc(wall), LORD_HOWE)).toEqual({
+      date: '2026-06-10',
+      time: '10:00',
+    })
   })
 })
 
@@ -1261,7 +1404,6 @@ Expected: FAIL — módulo inexistente.
 
 ```ts
 // src/lib/scheduling/timezone.ts
-import { TZDate } from '@date-fns/tz'
 
 export type WallTime = {
   /** AAAA-MM-DD */
@@ -1269,6 +1411,13 @@ export type WallTime = {
   /** HH:MM em 24 horas */
   time: string
   timeZone: string
+}
+
+export type Occurrence = {
+  utc: Date
+  offsetMinutes: number
+  /** Ex.: "UTC-03:00" — o que a UI mostra ao lado de cada opção. */
+  offsetLabel: string
 }
 
 export class NonexistentTimeError extends Error {
@@ -1279,6 +1428,19 @@ export class NonexistentTimeError extends Error {
         'Escolha outro horário.',
     )
     this.name = 'NonexistentTimeError'
+  }
+}
+
+export class AmbiguousTimeError extends Error {
+  readonly occurrences: Occurrence[]
+
+  constructor(date: string, time: string, occurrences: Occurrence[]) {
+    super(
+      `O horário ${time} de ${date} acontece duas vezes por causa do fim do ` +
+        'horário de verão. Escolha qual das ocorrências usar.',
+    )
+    this.name = 'AmbiguousTimeError'
+    this.occurrences = occurrences
   }
 }
 
@@ -1317,45 +1479,118 @@ function assertTimeZone(timeZone: string) {
 
 const dois = (n: number) => String(n).padStart(2, '0')
 
+/** Offset do fuso, em minutos, no instante dado. */
+function offsetMinutes(instant: Date, timeZone: string): number {
+  const dtf = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hour12: false,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  })
+  const p = Object.fromEntries(
+    dtf.formatToParts(instant).map((x) => [x.type, x.value]),
+  )
+  const comoUTC = Date.UTC(
+    Number(p.year),
+    Number(p.month) - 1,
+    Number(p.day),
+    // Alguns locales devolvem 24 para meia-noite.
+    Number(p.hour) % 24,
+    Number(p.minute),
+    Number(p.second),
+  )
+  return (comoUTC - instant.getTime()) / 60_000
+}
+
+function rotuloOffset(minutos: number): string {
+  const sinal = minutos < 0 ? '-' : '+'
+  const abs = Math.abs(minutos)
+  return `UTC${sinal}${dois(Math.floor(abs / 60))}:${dois(abs % 60)}`
+}
+
+function validarEntrada(wall: WallTime) {
+  if (!DATE_RE.test(wall.date)) throw new Error(`Data inválida: ${wall.date}`)
+  if (!TIME_RE.test(wall.time)) throw new Error(`Horário inválido: ${wall.time}`)
+  assertTimeZone(wall.timeZone)
+}
+
 /**
- * Converte data e hora locais para o instante UTC correspondente.
+ * Lista os instantes UTC que correspondem ao horário local informado.
  *
- * Dois casos de borda do horário de verão importam:
+ * Devolve 0 (horário não existe), 1 (comum) ou 2 (ocorre duas vezes).
  *
- * - **Horário inexistente** (o relógio salta para frente): a biblioteca
- *   desloca silenciosamente para depois do salto, o que publicaria uma hora
- *   depois do combinado. Detectamos comparando o horário local de volta com o
- *   digitado, e recusamos.
- * - **Horário ambíguo** (o relógio volta e a hora ocorre duas vezes):
- *   escolhemos a primeira ocorrência, que é a interpretação usual, e
- *   devolvemos `ambiguous: true` para a UI avisar.
+ * NÃO pressupõe que a transição de fuso seja de uma hora: Lord Howe Island
+ * muda 30 minutos, e mudanças históricas de offset têm valores arbitrários.
+ * Em vez de somar uma duração fixa, o algoritmo enumera candidatos a partir
+ * dos offsets vigentes antes e depois do dia, e mantém apenas os que são
+ * consistentes consigo mesmos.
  */
-export function toUtc(wall: WallTime): { utc: Date; ambiguous: boolean } {
-  const { date, time, timeZone } = wall
+export function listOccurrences(wall: WallTime): Occurrence[] {
+  validarEntrada(wall)
 
-  if (!DATE_RE.test(date)) throw new Error(`Data inválida: ${date}`)
-  if (!TIME_RE.test(time)) throw new Error(`Horário inválido: ${time}`)
-  assertTimeZone(timeZone)
+  const [ano, mes, dia] = wall.date.split('-').map(Number)
+  const [hora, minuto] = wall.time.split(':').map(Number)
+  const comoUTC = Date.UTC(ano, mes - 1, dia, hora, minuto, 0)
 
-  const [ano, mes, dia] = date.split('-').map(Number)
-  const [hora, minuto] = time.split(':').map(Number)
+  const candidatosDeOffset = [
+    offsetMinutes(new Date(comoUTC - 86_400_000), wall.timeZone),
+    offsetMinutes(new Date(comoUTC + 86_400_000), wall.timeZone),
+  ]
 
-  const zoned = new TZDate(ano, mes - 1, dia, hora, minuto, 0, timeZone)
-  const utc = new Date(zoned.getTime())
+  const encontrados: Occurrence[] = []
 
-  // Round-trip: se o horário local não volta igual, ele não existe no fuso.
-  const devolta = fromUtc(utc, timeZone)
-  if (devolta.date !== date || devolta.time !== time) {
-    throw new NonexistentTimeError(date, time, timeZone)
+  for (const offset of candidatosDeOffset) {
+    const candidato = new Date(comoUTC - offset * 60_000)
+    // Consistência: o offset real naquele instante precisa ser o mesmo usado
+    // para calculá-lo. Se não for, o horário local não existe por esse
+    // caminho.
+    if (offsetMinutes(candidato, wall.timeZone) !== offset) continue
+    if (encontrados.some((o) => o.utc.getTime() === candidato.getTime())) {
+      continue
+    }
+    encontrados.push({
+      utc: candidato,
+      offsetMinutes: offset,
+      offsetLabel: rotuloOffset(offset),
+    })
   }
 
-  // Se o instante uma hora depois rende o mesmo horário local, a hora ocorre
-  // duas vezes nesse dia.
-  const umaHoraDepois = new Date(utc.getTime() + 3600_000)
-  const depois = fromUtc(umaHoraDepois, timeZone)
-  const ambiguous = depois.date === date && depois.time === time
+  return encontrados.sort((a, b) => a.utc.getTime() - b.utc.getTime())
+}
 
-  return { utc, ambiguous }
+/**
+ * Converte data e hora locais para o instante UTC.
+ *
+ * - Horário inexistente: lança `NonexistentTimeError`. Deslocar em silêncio
+ *   publicaria em hora diferente da combinada sem ninguém saber.
+ * - Horário ambíguo sem escolha explícita: lança `AmbiguousTimeError` com as
+ *   duas opções, para a UI pedir a decisão ao usuário.
+ */
+export function toUtc(
+  wall: WallTime,
+  opts: { occurrence?: number } = {},
+): Date {
+  const ocorrencias = listOccurrences(wall)
+
+  if (ocorrencias.length === 0) {
+    throw new NonexistentTimeError(wall.date, wall.time, wall.timeZone)
+  }
+
+  if (ocorrencias.length === 1) return ocorrencias[0].utc
+
+  const escolhida = opts.occurrence
+  if (escolhida === undefined) {
+    throw new AmbiguousTimeError(wall.date, wall.time, ocorrencias)
+  }
+  if (escolhida < 0 || escolhida >= ocorrencias.length) {
+    throw new Error(`Ocorrência inválida: ${escolhida}`)
+  }
+
+  return ocorrencias[escolhida].utc
 }
 
 /** Converte um instante UTC para data e hora locais no fuso pedido. */
@@ -1364,15 +1599,19 @@ export function fromUtc(
   timeZone: string,
 ): { date: string; time: string } {
   assertTimeZone(timeZone)
-  const zoned = new TZDate(utc.getTime(), timeZone)
+  const deslocado = new Date(utc.getTime() + offsetMinutes(utc, timeZone) * 60_000)
   return {
-    date: `${zoned.getFullYear()}-${dois(zoned.getMonth() + 1)}-${dois(
-      zoned.getDate(),
-    )}`,
-    time: `${dois(zoned.getHours())}:${dois(zoned.getMinutes())}`,
+    date: `${deslocado.getUTCFullYear()}-${dois(
+      deslocado.getUTCMonth() + 1,
+    )}-${dois(deslocado.getUTCDate())}`,
+    time: `${dois(deslocado.getUTCHours())}:${dois(deslocado.getUTCMinutes())}`,
   }
 }
 ```
+
+Note que `fromUtc` usa os getters `getUTC*` sobre um instante já deslocado —
+não os getters locais. Usar `getHours()` traria o fuso da máquina que roda o
+código, e o worker no VPS não roda no fuso do usuário.
 
 - [ ] **Step 5: Rodar e ver passar**
 
@@ -1973,10 +2212,25 @@ git commit -m "feat: construcao e validacao do payload de publicacao"
 inserts sequenciais da aplicação deixariam um post órfão se o segundo falhasse
 — e o worker publicaria o post sem o comentário que o usuário pediu.
 
-**`SECURITY INVOKER` de propósito:** a função roda com os privilégios do
-usuário, então a RLS e as policies se aplicam normalmente aos inserts. Não há
-necessidade de `service_role` para criar uma publicação, e usá-lo aqui
-contornaria a proteção sem ganho nenhum.
+**`SECURITY DEFINER`, e por quê.** `authenticated` não tem INSERT nas tabelas
+de agendamento — é assim que se garante que ninguém contorna
+`post_requirements`, a confirmação de link+texto ou a validação de horário
+chamando o Data API direto. A função precisa então de privilégio próprio para
+inserir.
+
+Isso transfere a responsabilidade da RLS para o corpo da função, então ela
+segue as regras que a spec exige de todo `SECURITY DEFINER`:
+
+- `owner_id` vem **sempre** de `auth.uid()`, nunca do payload;
+- sessão ausente é recusada de saída;
+- conta e comunidade são conferidas contra o dono **antes** de qualquer insert
+  — a RLS não protege aqui, então a checagem é explícita;
+- `search_path = ''` fixo;
+- `EXECUTE` revogado de `PUBLIC` e `anon`, concedido só a `authenticated` e
+  `service_role`.
+
+As FKs compostas continuam valendo como última barreira: mesmo que a checagem
+do corpo fosse removida, a combinação inválida quebraria na gravação.
 
 - [ ] **Step 1: Criar a migration**
 
@@ -2202,6 +2456,215 @@ describe('create_scheduled_post', () => {
     expect(rows).toHaveLength(0)
   })
 })
+
+describe('mutação direta pelo Data API é fechada', () => {
+  // Se qualquer um destes passar a funcionar, o cliente ganha um caminho para
+  // agendar sem passar por post_requirements, pela confirmação de link+texto
+  // e pela validação de horário.
+
+  it('authenticated tem apenas SELECT nas tabelas de agendamento', async () => {
+    const { withSql } = await import('./sql')
+    for (const tabela of ['scheduled_posts', 'scheduled_comments']) {
+      const { rows } = await withSql((db) =>
+        db.query(
+          `select privilege_type from information_schema.role_table_grants
+           where grantee = 'authenticated' and table_name = $1
+           order by privilege_type`,
+          [tabela],
+        ),
+      )
+      expect(rows.map((r) => r.privilege_type)).toEqual(['SELECT'])
+    }
+  })
+
+  it('authenticated não tem UPDATE em nenhuma coluna', async () => {
+    const { withSql } = await import('./sql')
+    const { rows } = await withSql((db) =>
+      db.query(
+        `select column_name from information_schema.column_privileges
+         where grantee = 'authenticated'
+           and table_name in ('scheduled_posts', 'scheduled_comments')
+           and privilege_type = 'UPDATE'`,
+      ),
+    )
+    expect(rows).toHaveLength(0)
+  })
+
+  it('INSERT direto em scheduled_posts é recusado', async () => {
+    const { error } = await userClient(userA.accessToken)
+      .from('scheduled_posts')
+      .insert({
+        owner_id: userA.id,
+        reddit_account_id: contaA,
+        subreddit_id: subA,
+        title: 'Contornando as regras',
+        url: 'https://exemplo.com/x',
+        post_kind: 'link',
+        scheduled_at: new Date(Date.now() + 3600_000).toISOString(),
+        timezone: 'America/Sao_Paulo',
+      })
+    expect(error).not.toBeNull()
+  })
+
+  it('INSERT direto em scheduled_comments é recusado', async () => {
+    const { data: postId } = await criar(userA.accessToken, post())
+    const { error } = await userClient(userA.accessToken)
+      .from('scheduled_comments')
+      .insert({
+        owner_id: userA.id,
+        scheduled_post_id: postId as string,
+        reddit_account_id: contaA,
+        body: 'Comentário fora das regras',
+        mode: 'immediate',
+      })
+    expect(error).not.toBeNull()
+  })
+
+  it('UPDATE direto de scheduled_at é recusado', async () => {
+    const { data: postId } = await criar(userA.accessToken, post())
+    const novo = new Date(Date.now() + 86_400_000).toISOString()
+
+    const { error } = await userClient(userA.accessToken)
+      .from('scheduled_posts')
+      .update({ scheduled_at: novo })
+      .eq('id', postId as string)
+    expect(error).not.toBeNull()
+
+    const { data } = await adminClient()
+      .from('scheduled_posts')
+      .select('scheduled_at')
+      .eq('id', postId as string)
+      .single()
+    expect(data!.scheduled_at).not.toBe(novo)
+  })
+
+  it('UPDATE direto de status para cancelled é recusado', async () => {
+    const { data: postId } = await criar(userA.accessToken, post())
+
+    const { error } = await userClient(userA.accessToken)
+      .from('scheduled_posts')
+      .update({ status: 'cancelled' })
+      .eq('id', postId as string)
+    expect(error).not.toBeNull()
+  })
+
+  it('DELETE direto é recusado', async () => {
+    const { data: postId } = await criar(userA.accessToken, post())
+    const { error } = await userClient(userA.accessToken)
+      .from('scheduled_posts')
+      .delete()
+      .eq('id', postId as string)
+    expect(error).not.toBeNull()
+  })
+
+  it('MAS a RPC de reagendamento funciona', async () => {
+    const { data: postId } = await criar(userA.accessToken, post())
+    const novo = new Date(Date.now() + 86_400_000).toISOString()
+
+    const { error } = await userClient(userA.accessToken).rpc(
+      'reschedule_scheduled_post',
+      {
+        p_post_id: postId as string,
+        p_scheduled_at: novo,
+        p_timezone: 'America/Sao_Paulo',
+      },
+    )
+    expect(error).toBeNull()
+
+    const { data } = await adminClient()
+      .from('scheduled_posts')
+      .select('scheduled_at')
+      .eq('id', postId as string)
+      .single()
+    expect(new Date(data!.scheduled_at).toISOString()).toBe(novo)
+  })
+
+  it('MAS a RPC de cancelamento funciona', async () => {
+    const { data: postId } = await criar(userA.accessToken, post())
+
+    const { error } = await userClient(userA.accessToken).rpc(
+      'cancel_scheduled_post',
+      { p_post_id: postId as string },
+    )
+    expect(error).toBeNull()
+
+    const { data } = await adminClient()
+      .from('scheduled_posts')
+      .select('status')
+      .eq('id', postId as string)
+      .single()
+    expect(data!.status).toBe('cancelled')
+  })
+
+  it('a RPC de reagendamento recusa post de outro usuário', async () => {
+    const { data: postId } = await criar(userA.accessToken, post())
+
+    const { error } = await userClient(userB.accessToken).rpc(
+      'reschedule_scheduled_post',
+      {
+        p_post_id: postId as string,
+        p_scheduled_at: new Date(Date.now() + 86_400_000).toISOString(),
+        p_timezone: 'America/Sao_Paulo',
+      },
+    )
+    expect(error).not.toBeNull()
+  })
+
+  it('a RPC de cancelamento recusa post de outro usuário', async () => {
+    const { data: postId } = await criar(userA.accessToken, post())
+
+    const { error } = await userClient(userB.accessToken).rpc(
+      'cancel_scheduled_post',
+      { p_post_id: postId as string },
+    )
+    expect(error).not.toBeNull()
+
+    const { data } = await adminClient()
+      .from('scheduled_posts')
+      .select('status')
+      .eq('id', postId as string)
+      .single()
+    expect(data!.status).toBe('scheduled')
+  })
+
+  it('as RPCs de mutação não são chamáveis por anon', async () => {
+    const { withSql } = await import('./sql')
+    const { rows } = await withSql((db) =>
+      db.query(
+        `select p.proname from pg_proc p
+         join pg_namespace n on n.oid = p.pronamespace
+         where n.nspname = 'public'
+           and p.proname in (
+             'create_scheduled_post',
+             'reschedule_scheduled_post',
+             'cancel_scheduled_post'
+           )
+           and has_function_privilege('anon', p.oid, 'EXECUTE')`,
+      ),
+    )
+    expect(rows).toHaveLength(0)
+  })
+
+  it('as RPCs têm search_path fixo', async () => {
+    const { withSql } = await import('./sql')
+    const { rows } = await withSql((db) =>
+      db.query(
+        `select p.proname, p.proconfig from pg_proc p
+         join pg_namespace n on n.oid = p.pronamespace
+         where n.nspname = 'public'
+           and p.proname in (
+             'create_scheduled_post',
+             'reschedule_scheduled_post',
+             'cancel_scheduled_post'
+           )`,
+      ),
+    )
+    expect(rows).toHaveLength(3)
+    for (const r of rows) {
+      expect((r.proconfig ?? []).join(',')).toContain('search_path=')
+    }
+  })
+})
 ```
 
 - [ ] **Step 3: Rodar e ver falhar**
@@ -2217,25 +2680,49 @@ Expected: FAIL — a função não existe.
 -- Dois inserts sequenciais da aplicação deixariam um post órfão se o segundo
 -- falhasse, e o worker publicaria sem o comentário que o usuário pediu.
 --
--- SECURITY INVOKER: roda com os privilégios de quem chama, então RLS e
--- policies se aplicam normalmente. Criar publicação não precisa de
--- service_role, e usá-lo aqui contornaria a proteção sem ganho.
+-- SECURITY DEFINER: `authenticated` não tem INSERT nas tabelas, para não
+-- poder contornar as regras do domínio pelo Data API. Em troca, a checagem de
+-- posse passa a ser responsabilidade desta função — a RLS não a faz aqui.
 create or replace function public.create_scheduled_post(
   p_post jsonb,
   p_comment jsonb default null
 )
 returns uuid
 language plpgsql
-security invoker
+security definer
 set search_path = ''
 as $$
 declare
   v_owner uuid := (select auth.uid());
   v_post_id uuid;
   v_account uuid := (p_post ->> 'reddit_account_id')::uuid;
+  v_subreddit uuid := (p_post ->> 'subreddit_id')::uuid;
+  v_ok boolean;
 begin
   if v_owner is null then
     raise exception 'Sessão ausente.' using errcode = '42501';
+  end if;
+
+  -- Conta e comunidade precisam ser do usuário da sessão. Sob SECURITY
+  -- DEFINER a RLS não filtra nada, então esta checagem é a barreira — e as
+  -- FKs compostas continuam sendo a última.
+  select exists (
+    select 1 from public.reddit_accounts
+    where id = v_account and owner_id = v_owner
+  ) into v_ok;
+  if not v_ok then
+    raise exception 'Conta não encontrada.' using errcode = '42501';
+  end if;
+
+  select exists (
+    select 1 from public.subreddits
+    where id = v_subreddit
+      and owner_id = v_owner
+      and reddit_account_id = v_account
+  ) into v_ok;
+  if not v_ok then
+    raise exception 'Comunidade não encontrada para esta conta.'
+      using errcode = '42501';
   end if;
 
   -- owner_id vem SEMPRE da sessão, nunca do payload: é o que impede um
@@ -2248,7 +2735,7 @@ begin
   values (
     v_owner,
     v_account,
-    (p_post ->> 'subreddit_id')::uuid,
+    v_subreddit,
     p_post ->> 'title',
     nullif(p_post ->> 'url', ''),
     nullif(p_post ->> 'body', ''),
@@ -2289,6 +2776,103 @@ $$;
 revoke execute on function public.create_scheduled_post(jsonb, jsonb)
   from public, anon;
 grant execute on function public.create_scheduled_post(jsonb, jsonb)
+  to authenticated, service_role;
+
+-- ---------------------------------------------------------------
+-- Reagendar
+-- ---------------------------------------------------------------
+-- Recebe o instante já convertido para UTC: a decisão de qual ocorrência usar
+-- num horário ambíguo é do usuário, e acontece antes de chegar aqui.
+create or replace function public.reschedule_scheduled_post(
+  p_post_id uuid,
+  p_scheduled_at timestamptz,
+  p_timezone text
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_owner uuid := (select auth.uid());
+  v_status text;
+begin
+  if v_owner is null then
+    raise exception 'Sessão ausente.' using errcode = '42501';
+  end if;
+
+  select status into v_status
+  from public.scheduled_posts
+  where id = p_post_id and owner_id = v_owner
+  for update;
+
+  if not found then
+    raise exception 'Publicação não encontrada.' using errcode = '42501';
+  end if;
+
+  if v_status not in ('draft', 'scheduled') then
+    raise exception 'Só é possível reagendar publicações que ainda não entraram em execução.'
+      using errcode = '42501';
+  end if;
+
+  -- Apenas as colunas de agendamento: nada de conteúdo, estado ou execução.
+  update public.scheduled_posts
+  set scheduled_at = p_scheduled_at, timezone = p_timezone
+  where id = p_post_id;
+end;
+$$;
+
+-- ---------------------------------------------------------------
+-- Cancelar
+-- ---------------------------------------------------------------
+create or replace function public.cancel_scheduled_post(p_post_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_owner uuid := (select auth.uid());
+  v_status text;
+begin
+  if v_owner is null then
+    raise exception 'Sessão ausente.' using errcode = '42501';
+  end if;
+
+  select status into v_status
+  from public.scheduled_posts
+  where id = p_post_id and owner_id = v_owner
+  for update;
+
+  if not found then
+    raise exception 'Publicação não encontrada.' using errcode = '42501';
+  end if;
+
+  if v_status not in ('draft', 'scheduled') then
+    raise exception 'Só é possível cancelar publicações que ainda não entraram em execução.'
+      using errcode = '42501';
+  end if;
+
+  update public.scheduled_posts
+  set status = 'cancelled'
+  where id = p_post_id;
+
+  -- Comentário sem post não faz sentido. Só os que ainda não executaram.
+  update public.scheduled_comments
+  set status = 'cancelled'
+  where scheduled_post_id = p_post_id
+    and status in ('draft', 'scheduled');
+end;
+$$;
+
+revoke execute on function
+  public.reschedule_scheduled_post(uuid, timestamptz, text) from public, anon;
+revoke execute on function public.cancel_scheduled_post(uuid) from public, anon;
+
+grant execute on function
+  public.reschedule_scheduled_post(uuid, timestamptz, text)
+  to authenticated, service_role;
+grant execute on function public.cancel_scheduled_post(uuid)
   to authenticated, service_role;
 ```
 
@@ -2769,6 +3353,19 @@ export const newPostSchema = z
     time: z.string().trim().default(''),
     timeZone: z.enum(SUPPORTED_TIME_ZONES),
     publishMode: z.enum(['now', 'schedule']),
+    /**
+     * Qual instante usar quando o horário local ocorre duas vezes (fim do
+     * horário de verão). Vem vazio na primeira tentativa; o formulário
+     * pergunta e reenvia com a escolha.
+     */
+    occurrence: z
+      .string()
+      .trim()
+      .default('')
+      .transform((v) => (v === '' ? undefined : Number(v)))
+      .refine((v) => v === undefined || (Number.isInteger(v) && v >= 0), {
+        message: 'Ocorrência inválida.',
+      }),
 
     addComment: checkbox,
     commentBody: z.string().trim().default(''),
@@ -2833,11 +3430,25 @@ export const newPostSchema = z
 
 export type NewPostInput = z.infer<typeof newPostSchema>
 
+export type TimeChoice = {
+  /** Índice a reenviar em `occurrence`. */
+  index: number
+  /** Ex.: "UTC-04:00" */
+  offsetLabel: string
+  /** Instante correspondente, em ISO, para exibição. */
+  utcIso: string
+}
+
 export type CreateState = {
   error: string | null
   /** Campo a destacar no formulário, quando o erro for de um campo. */
   fieldError: string | null
   postId: string | null
+  /**
+   * Preenchido quando o horário escolhido acontece duas vezes: o formulário
+   * mostra as opções e reenvia com `occurrence`.
+   */
+  timeChoices: TimeChoice[] | null
 }
 ```
 
@@ -2857,7 +3468,6 @@ import type { NewPostInput } from '@/app/(dashboard)/dashboard/new/schema'
 
 export type CreateResult = {
   postId: string
-  ambiguousTime: boolean
 }
 
 export class SubredditMismatchError extends Error {
@@ -2895,14 +3505,19 @@ export async function createPost(
   }
 
   // --- horário ---
-  const agendamento =
+  // toUtc lança em horário inexistente e em horário ambíguo sem escolha
+  // explícita; a action traduz os dois para o formulário.
+  const quando =
     input.publishMode === 'now'
-      ? { utc: new Date(), ambiguous: false }
-      : toUtc({
-          date: input.date,
-          time: input.time,
-          timeZone: input.timeZone,
-        })
+      ? new Date()
+      : toUtc(
+          {
+            date: input.date,
+            time: input.time,
+            timeZone: input.timeZone,
+          },
+          { occurrence: input.occurrence },
+        )
 
   // --- requisitos reais da comunidade ---
   const client = await getRedditClient(account, opts)
@@ -2944,11 +3559,14 @@ export async function createPost(
       delay_minutes: modo === 'delay' ? input.commentDelayMinutes : null,
       scheduled_at:
         modo === 'absolute'
-          ? toUtc({
-              date: input.commentDate,
-              time: input.commentTime,
-              timeZone: input.timeZone,
-            }).utc.toISOString()
+          ? toUtc(
+              {
+                date: input.commentDate,
+                time: input.commentTime,
+                timeZone: input.timeZone,
+              },
+              { occurrence: input.occurrence },
+            ).toISOString()
           : null,
     }
   }
@@ -2965,7 +3583,7 @@ export async function createPost(
       flair_id: payload.flairId,
       nsfw: payload.nsfw,
       spoiler: payload.spoiler,
-      scheduled_at: agendamento.utc.toISOString(),
+      scheduled_at: quando.toISOString(),
       timezone: input.timeZone,
       status: 'scheduled',
     },
@@ -2976,7 +3594,7 @@ export async function createPost(
     throw error ?? new Error('Falha ao gravar a publicação.')
   }
 
-  return { postId: data as string, ambiguousTime: agendamento.ambiguous }
+  return { postId: data as string }
 }
 
 export { PayloadError }
@@ -2993,8 +3611,13 @@ import { ForbiddenError } from '@/lib/auth/ownership'
 import { RedditError } from '@/lib/reddit/errors'
 import { createPost, SubredditMismatchError } from '@/lib/scheduling/create-post'
 import { PayloadError } from '@/lib/scheduling/payload-builder'
-import { NonexistentTimeError } from '@/lib/scheduling/timezone'
+import {
+  AmbiguousTimeError,
+  NonexistentTimeError,
+} from '@/lib/scheduling/timezone'
 import { newPostSchema, type CreateState } from './schema'
+
+const vazio = { fieldError: null, postId: null, timeChoices: null }
 
 export async function createScheduledPost(
   _prev: CreateState,
@@ -3006,9 +3629,9 @@ export async function createScheduledPost(
   if (!parsed.success) {
     const issue = parsed.error.issues[0]
     return {
+      ...vazio,
       error: issue.message,
       fieldError: String(issue.path[0] ?? ''),
-      postId: null,
     }
   }
 
@@ -3016,29 +3639,39 @@ export async function createScheduledPost(
     const { postId } = await createPost(parsed.data)
     revalidatePath('/dashboard/queue')
     revalidatePath('/dashboard/calendar')
-    return { error: null, fieldError: null, postId }
+    return { error: null, fieldError: null, postId, timeChoices: null }
   } catch (e) {
-    if (e instanceof PayloadError) {
-      return { error: e.userMessage, fieldError: e.field, postId: null }
+    if (e instanceof AmbiguousTimeError) {
+      // Não escolhemos pelo usuário: devolvemos as opções com o offset de
+      // cada uma para ele decidir.
+      return {
+        ...vazio,
+        error: e.message,
+        fieldError: 'time',
+        timeChoices: e.occurrences.map((o, index) => ({
+          index,
+          offsetLabel: o.offsetLabel,
+          utcIso: o.utc.toISOString(),
+        })),
+      }
     }
     if (e instanceof NonexistentTimeError) {
-      return { error: e.message, fieldError: 'time', postId: null }
+      return { ...vazio, error: e.message, fieldError: 'time' }
+    }
+    if (e instanceof PayloadError) {
+      return { ...vazio, error: e.userMessage, fieldError: e.field }
     }
     if (e instanceof SubredditMismatchError) {
-      return { error: e.message, fieldError: 'subredditId', postId: null }
+      return { ...vazio, error: e.message, fieldError: 'subredditId' }
     }
     if (e instanceof ForbiddenError) {
-      return { error: 'Conta não encontrada.', fieldError: 'accountId', postId: null }
+      return { ...vazio, error: 'Conta não encontrada.', fieldError: 'accountId' }
     }
     if (e instanceof RedditError) {
       // Inclui REQUIREMENTS_UNAVAILABLE, orçamento e conta desconectada.
-      return { error: e.userMessage, fieldError: null, postId: null }
+      return { ...vazio, error: e.userMessage }
     }
-    return {
-      error: 'Não foi possível agendar a publicação agora.',
-      fieldError: null,
-      postId: null,
-    }
+    return { ...vazio, error: 'Não foi possível agendar a publicação agora.' }
   }
 }
 ```
@@ -3216,6 +3849,39 @@ describe('reagendamento', () => {
     expect(r.error).toMatch(/não existe/i)
   })
 
+  it('pede escolha em horário que acontece duas vezes', async () => {
+    const id = await criarPost()
+    const r = await reagendar({
+      postId: id,
+      date: '2026-11-01',
+      time: '01:30',
+      timeZone: 'America/New_York',
+    })
+    expect(r.error).toMatch(/duas vezes/i)
+  })
+
+  it('aceita a ocorrência escolhida explicitamente', async () => {
+    const id = await criarPost()
+    const r = await reagendar({
+      postId: id,
+      date: '2026-11-01',
+      time: '01:30',
+      timeZone: 'America/New_York',
+      occurrence: '1',
+    })
+    expect(r.error).toBeNull()
+
+    const { data } = await adminClient()
+      .from('scheduled_posts')
+      .select('scheduled_at')
+      .eq('id', id)
+      .single()
+    // Segunda ocorrência: já em horário padrão (UTC-5).
+    expect(new Date(data!.scheduled_at).toISOString()).toBe(
+      '2026-11-01T06:30:00.000Z',
+    )
+  })
+
   it.each(['processing', 'published', 'failed', 'needs_review', 'cancelled'])(
     'recusa reagendar post em %s',
     async (status) => {
@@ -3361,6 +4027,11 @@ export class PostNotFoundError extends Error {
   }
 }
 
+/**
+ * Confere antes de chamar a RPC — não porque a RPC precise, mas porque a
+ * mensagem daqui é muito melhor que um erro de função. A autoridade continua
+ * sendo a função SQL, que revalida posse e estado sob lock.
+ */
 async function carregarEditavel(postId: string) {
   const user = await requireUser()
   const supabase = await createServerSupabase()
@@ -3372,7 +4043,6 @@ async function carregarEditavel(postId: string) {
     .maybeSingle()
 
   if (!data) throw new PostNotFoundError()
-  // Redundante com a RLS, e de propósito.
   if (data.owner_id !== user.id) throw new PostNotFoundError()
   if (!EDITABLE_STATUSES.includes(data.status as 'draft' | 'scheduled')) {
     throw new NotEditableError(data.status)
@@ -3383,38 +4053,28 @@ async function carregarEditavel(postId: string) {
 
 export async function reschedule(
   postId: string,
-  when: { date: string; time: string; timeZone: string },
-): Promise<{ ambiguous: boolean }> {
+  when: { date: string; time: string; timeZone: string; occurrence?: number },
+): Promise<void> {
   const { supabase } = await carregarEditavel(postId)
-  const { utc, ambiguous } = toUtc(when)
+  // Lança em horário inexistente e em ambíguo sem escolha explícita.
+  const utc = toUtc(when, { occurrence: when.occurrence })
 
-  const { error } = await supabase
-    .from('scheduled_posts')
-    .update({
-      scheduled_at: utc.toISOString(),
-      timezone: when.timeZone,
-    })
-    .eq('id', postId)
-
+  const { error } = await supabase.rpc('reschedule_scheduled_post', {
+    p_post_id: postId,
+    p_scheduled_at: utc.toISOString(),
+    p_timezone: when.timeZone,
+  })
   if (error) throw error
-  return { ambiguous }
 }
 
 export async function cancel(postId: string): Promise<void> {
   const { supabase } = await carregarEditavel(postId)
 
-  const { error } = await supabase
-    .from('scheduled_posts')
-    .update({ status: 'cancelled' })
-    .eq('id', postId)
+  // A RPC cancela o post e os comentários pendentes na mesma transação.
+  const { error } = await supabase.rpc('cancel_scheduled_post', {
+    p_post_id: postId,
+  })
   if (error) throw error
-
-  // Comentário sem post não faz sentido. Só os que ainda não executaram.
-  await supabase
-    .from('scheduled_comments')
-    .update({ status: 'cancelled' })
-    .eq('scheduled_post_id', postId)
-    .in('status', ['draft', 'scheduled'])
 }
 ```
 
@@ -3425,6 +4085,7 @@ export async function cancel(postId: string): Promise<void> {
 import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
 import {
+  AmbiguousTimeError,
   NonexistentTimeError,
   SUPPORTED_TIME_ZONES,
 } from '@/lib/scheduling/timezone'
@@ -3442,9 +4103,17 @@ const rescheduleSchema = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Informe a data.'),
   time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Informe o horário.'),
   timeZone: z.enum(SUPPORTED_TIME_ZONES),
+  occurrence: z
+    .string()
+    .trim()
+    .optional()
+    .transform((v) => (v === undefined || v === '' ? undefined : Number(v))),
 })
 
 function traduzir(e: unknown): string {
+  // AmbiguousTimeError também cai aqui: a mensagem já pede a escolha, e a
+  // interface de fila reenvia com `occurrence`.
+  if (e instanceof AmbiguousTimeError) return e.message
   if (e instanceof NonexistentTimeError) return e.message
   if (e instanceof NotEditableError) return e.message
   if (e instanceof PostNotFoundError) return e.message
@@ -3467,6 +4136,7 @@ export async function reschedulePost(
       date: parsed.data.date,
       time: parsed.data.time,
       timeZone: parsed.data.timeZone,
+      occurrence: parsed.data.occurrence,
     })
   } catch (e) {
     return { error: traduzir(e), ok: false }
@@ -3751,7 +4421,12 @@ import { createScheduledPost } from '@/app/(dashboard)/dashboard/new/actions'
 import type { CreateState } from '@/app/(dashboard)/dashboard/new/schema'
 import { SUPPORTED_TIME_ZONES } from '@/lib/scheduling/timezone'
 
-const initial: CreateState = { error: null, fieldError: null, postId: null }
+const initial: CreateState = {
+  error: null,
+  fieldError: null,
+  postId: null,
+  timeChoices: null,
+}
 
 type Account = { id: string; username: string; status: string }
 type Community = {
@@ -4033,6 +4708,33 @@ export function NewPostForm({
               Horário
             </label>
             <input id="time" name="time" type="time" className={field} />
+          </div>
+        </div>
+      )}
+
+      {/* Horário que acontece duas vezes: o usuário escolhe qual */}
+      {state.timeChoices && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 p-3 dark:border-amber-900 dark:bg-amber-950/40">
+          <p className="text-sm text-amber-900 dark:text-amber-200">
+            Este horário acontece duas vezes no dia escolhido, por causa do fim
+            do horário de verão. Escolha qual delas usar:
+          </p>
+          <div className="mt-2 space-y-1">
+            {state.timeChoices.map((c) => (
+              <label
+                key={c.index}
+                className="flex items-center gap-2 text-sm text-amber-900 dark:text-amber-200"
+              >
+                <input
+                  type="radio"
+                  name="occurrence"
+                  value={String(c.index)}
+                  defaultChecked={c.index === 0}
+                />
+                {c.index === 0 ? 'Primeira ocorrência' : 'Segunda ocorrência'} (
+                {c.offsetLabel})
+              </label>
+            ))}
           </div>
         </div>
       )}
@@ -4386,6 +5088,107 @@ describe('isolamento de publicações', () => {
     )
   })
 })
+
+describe('isolamento pelo caminho das RPCs', () => {
+  // Os testes acima barram no grant. Estes barram no único caminho que o
+  // cliente realmente tem — é aqui que o isolamento precisa valer de fato.
+
+  it('B não cria publicação com a conta de A pela RPC', async () => {
+    const { error } = await userClient(userB.accessToken).rpc(
+      'create_scheduled_post',
+      {
+        p_post: {
+          reddit_account_id: contaA,
+          subreddit_id: subA,
+          title: 'Tentativa via RPC',
+          url: 'https://exemplo.com/x',
+          post_kind: 'link',
+          scheduled_at: new Date(Date.now() + 3600_000).toISOString(),
+          timezone: 'America/Sao_Paulo',
+          status: 'scheduled',
+        },
+        p_comment: null,
+      },
+    )
+    expect(error).not.toBeNull()
+  })
+
+  it('B não usa comunidade de A com a própria conta pela RPC', async () => {
+    const { error } = await userClient(userB.accessToken).rpc(
+      'create_scheduled_post',
+      {
+        p_post: {
+          reddit_account_id: contaB,
+          subreddit_id: subA,
+          title: 'Tentativa via RPC',
+          url: 'https://exemplo.com/x',
+          post_kind: 'link',
+          scheduled_at: new Date(Date.now() + 3600_000).toISOString(),
+          timezone: 'America/Sao_Paulo',
+          status: 'scheduled',
+        },
+        p_comment: null,
+      },
+    )
+    expect(error).not.toBeNull()
+  })
+
+  it('B não reagenda publicação de A pela RPC', async () => {
+    const { error } = await userClient(userB.accessToken).rpc(
+      'reschedule_scheduled_post',
+      {
+        p_post_id: postA,
+        p_scheduled_at: new Date(Date.now() + 86_400_000).toISOString(),
+        p_timezone: 'America/Sao_Paulo',
+      },
+    )
+    expect(error).not.toBeNull()
+  })
+
+  it('B não cancela publicação de A pela RPC', async () => {
+    const { error } = await userClient(userB.accessToken).rpc(
+      'cancel_scheduled_post',
+      { p_post_id: postA },
+    )
+    expect(error).not.toBeNull()
+
+    const { data } = await adminClient()
+      .from('scheduled_posts')
+      .select('status')
+      .eq('id', postA)
+      .single()
+    expect(data!.status).not.toBe('cancelled')
+  })
+
+  it('a RPC de A grava sempre com o owner de A, ignorando o payload', async () => {
+    const { data: postId, error } = await userClient(userA.accessToken).rpc(
+      'create_scheduled_post',
+      {
+        p_post: {
+          // owner_id no payload é ignorado: a função usa auth.uid().
+          owner_id: userB.id,
+          reddit_account_id: contaA,
+          subreddit_id: subA,
+          title: 'Owner vem da sessão',
+          url: 'https://exemplo.com/x',
+          post_kind: 'link',
+          scheduled_at: new Date(Date.now() + 3600_000).toISOString(),
+          timezone: 'America/Sao_Paulo',
+          status: 'scheduled',
+        },
+        p_comment: null,
+      },
+    )
+    expect(error).toBeNull()
+
+    const { data } = await adminClient()
+      .from('scheduled_posts')
+      .select('owner_id')
+      .eq('id', postId as string)
+      .single()
+    expect(data!.owner_id).toBe(userA.id)
+  })
+})
 ```
 
 - [ ] **Step 2: Atualizar o teste de rotas**
@@ -4476,9 +5279,13 @@ git commit -m "docs: decisoes do plano 4"
 - [ ] `authenticated` não tem UPDATE em nenhuma coluna de execução; o trigger recusa mesmo com grant concedido
 - [ ] `needs_review` não volta para `scheduled`; `published` e `cancelled` são terminais
 - [ ] `processing` volta para `scheduled` apenas com `submit_attempted_at` nulo
+- [ ] `authenticated` tem **apenas** `SELECT` em `scheduled_posts` e `scheduled_comments`, e nenhum `UPDATE` de coluna
+- [ ] INSERT, UPDATE e DELETE diretos pelo Data API são recusados; as RPCs autorizadas funcionam
+- [ ] As três RPCs de mutação são `SECURITY DEFINER` com `search_path` fixo, sem `EXECUTE` para `anon`, e recusam recurso de outro usuário
 - [ ] Horário inexistente por DST é recusado com mensagem clara
-- [ ] Horário ambíguo é aceito na primeira ocorrência e sinalizado
-- [ ] Round-trip de fuso preserva o horário digitado
+- [ ] Horário que ocorre duas vezes exige escolha explícita, com o offset de cada opção
+- [ ] O algoritmo de ocorrências funciona em transição de 30 minutos (Lord Howe), não só de 60
+- [ ] Round-trip de fuso preserva o horário digitado e não depende do fuso da máquina
 - [ ] Título + link + texto produz link post com comentário automático, e só com confirmação
 - [ ] Falha ao ler `post_requirements` impede o agendamento e não grava nada
 - [ ] Post e comentário são criados atomicamente; falha em um não deixa o outro
