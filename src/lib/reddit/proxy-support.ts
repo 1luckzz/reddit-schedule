@@ -11,3 +11,21 @@
 export const SUPPORTED_PROXY_PROTOCOLS = ['http', 'https', 'socks5'] as const
 
 export type ProxyProtocol = (typeof SUPPORTED_PROXY_PROTOCOLS)[number]
+
+/**
+ * Protocolos que funcionam hoje, mas cujo suporte o próprio undici declara
+ * instável. Verificado em 2026-08-16 com undici 8.10.0, que emite:
+ *
+ *   ExperimentalWarning: SOCKS5 proxy support is experimental and subject to
+ *   change
+ *
+ * A travessia foi comprovada por teste real, então o suporte é verdadeiro —
+ * mas uma atualização de undici pode alterá-lo sem aviso de breaking change.
+ * O teste de travessia é a rede de proteção: se quebrar, o protocolo sai
+ * daqui em vez de virar promessa vazia.
+ */
+export const EXPERIMENTAL_PROXY_PROTOCOLS: readonly ProxyProtocol[] = ['socks5']
+
+export function isExperimentalProtocol(protocol: ProxyProtocol): boolean {
+  return EXPERIMENTAL_PROXY_PROTOCOLS.includes(protocol)
+}

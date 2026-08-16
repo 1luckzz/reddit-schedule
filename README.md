@@ -92,6 +92,31 @@ de segurança, não prova de ausência de vulnerabilidades.
 - Sessão validada com `getClaims()`, que confere a assinatura do JWT contra as
   chaves públicas do projeto. `getSession()` não é usado em código de servidor.
 
+## Configuração de rede por conta
+
+A configuração de rede é **fixa por conta**: uma conta usa sempre a mesma rota
+enquanto estiver habilitada. Não há pool, rotação, troca de IP após erro nem
+retry de 403 por outra rota. Proxy indisponível gera erro registrado e a
+política normal de retry para indisponibilidade transitória.
+
+Os protocolos oferecidos são os confirmados por teste de integração real contra
+a versão instalada do `undici` — cada um sobe um proxy local, verifica que o
+tráfego atravessou de fato e confirma que **não há fallback silencioso** para
+conexão direta quando o proxy está fora do ar.
+
+| Protocolo | Estado |
+|---|---|
+| `http` | estável |
+| `https` | estável |
+| `socks5` | funciona, mas o undici o declara **experimental** |
+
+Sobre o `socks5`: a travessia foi comprovada em teste com undici 8.10.0, porém
+o próprio undici emite `ExperimentalWarning: SOCKS5 proxy support is
+experimental and subject to change`. Isso significa que uma atualização pode
+alterar o comportamento sem constar como breaking change. O teste de travessia
+existe justamente para detectar isso — se quebrar, o protocolo sai da lista em
+`src/lib/reddit/proxy-support.ts` em vez de continuar sendo oferecido.
+
 ## Estado atual
 
 **Plano 1 concluído:** autenticação do painel, banco com RLS, criptografia e
