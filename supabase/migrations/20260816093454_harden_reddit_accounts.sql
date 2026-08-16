@@ -33,12 +33,23 @@ grant update (min_interval_seconds) on public.reddit_accounts to authenticated;
 
 drop policy "reddit_accounts_insert_own" on public.reddit_accounts;
 
--- Segunda barreira: mesmo que um grant seja afrouxado por engano no futuro,
--- o trigger recusa alteração das colunas gerenciadas internamente.
+-- Segunda barreira, independente da primeira: mesmo que um grant seja
+-- afrouxado por engano no futuro, o trigger recusa alteração das colunas
+-- gerenciadas. Provado em tests/db/managed-columns-trigger.test.ts, que
+-- concede o grant de propósito e verifica que a alteração continua barrada.
 --
--- current_user vira o dono da função em contextos SECURITY DEFINER, por isso
--- sync_proxy_status() (definer) e o service_role passam, enquanto o role
--- `authenticated` do PostgREST não.
+-- Esta função PRECISA ser SECURITY INVOKER, e não precisa de privilégio
+-- elevado nenhum: ela só lê OLD e NEW. Em SECURITY DEFINER, current_user seria
+-- sempre o dono da função, independentemente de quem chamou, e o trigger
+-- perderia exatamente a informação de que depende — qual papel está executando
+-- o UPDATE.
+--
+-- Como INVOKER, ela enxerga `authenticated` quando o UPDATE vem do PostgREST,
+-- e `postgres` quando vem de dentro de sync_proxy_status(), que é SECURITY
+-- DEFINER e por isso troca o current_user do próprio contexto.
+--
+-- Semântica: o trigger impede MUDANÇA de valor, não escrita idêntica. Um
+-- UPDATE que grava o mesmo valor passa, porque não há alteração a barrar.
 create or replace function public.protect_managed_account_columns()
 returns trigger
 language plpgsql
