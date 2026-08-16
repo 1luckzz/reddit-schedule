@@ -52,26 +52,30 @@ describe('reddit_accounts', () => {
   })
 
   it('o usuário A não altera a conta de B', async () => {
+    // min_interval_seconds é a única coluna que o dono pode atualizar, então
+    // é ela que isola a RLS do grant: aqui o que barra é a posse, não a
+    // permissão de coluna.
     const { data } = await userClient(userA.accessToken)
       .from('reddit_accounts')
-      .update({ username: 'invadido' })
+      .update({ min_interval_seconds: 999 })
       .eq('id', accountB)
       .select()
-    expect(data).toHaveLength(0)
+    expect(data ?? []).toHaveLength(0)
 
     const check = await adminClient()
       .from('reddit_accounts')
-      .select('username')
+      .select('min_interval_seconds')
       .eq('id', accountB)
       .single()
-    expect(check.data!.username).not.toBe('invadido')
+    expect(check.data!.min_interval_seconds).toBe(300)
   })
 
-  it('o usuário não consegue inserir conta para outro owner', async () => {
+  it('o usuário autenticado não consegue inserir contas', async () => {
+    // Contas nascem exclusivamente pelo fluxo OAuth, via service_role.
     const { error } = await userClient(userA.accessToken)
       .from('reddit_accounts')
       .insert({
-        owner_id: userB.id,
+        owner_id: userA.id,
         reddit_user_id: 't2_forjado',
         username: 'forjado',
       })
@@ -95,20 +99,23 @@ describe('reddit_accounts', () => {
     expect(segunda.error).not.toBeNull()
   })
 
-  it('permite o mesmo reddit_user_id para owners diferentes', async () => {
-    const redditUserId = `t2_compartilhado_${Date.now()}`
+  it('impede a mesma identidade Reddit em owners diferentes', async () => {
+    // Unicidade global: compartilhar a identidade quebraria o espaçamento por
+    // conta, o lock de refresh e a configuração de rede única.
+    const redditUserId = `t2_global_${Date.now()}`
     const a = await adminClient().from('reddit_accounts').insert({
       owner_id: userA.id,
       reddit_user_id: redditUserId,
       username: 'mesma_conta',
     })
+    expect(a.error).toBeNull()
+
     const b = await adminClient().from('reddit_accounts').insert({
       owner_id: userB.id,
       reddit_user_id: redditUserId,
       username: 'mesma_conta',
     })
-    expect(a.error).toBeNull()
-    expect(b.error).toBeNull()
+    expect(b.error).not.toBeNull()
   })
 
   it('rejeita status fora da lista permitida', async () => {
@@ -117,6 +124,139 @@ describe('reddit_accounts', () => {
       .update({ status: 'inventado' })
       .eq('id', accountA)
     expect(error).not.toBeNull()
+  })
+})
+
+describe('colunas gerenciadas pelo sistema', () => {
+  // Conta própria: este bloco altera status e configuração de rede, e não
+  // pode contaminar o estado que os outros describes verificam.
+  let conta: string
+
+  beforeAll(async () => {
+    conta = await createAccount(userA.id, `gerenciada_${Date.now()}`)
+    await adminClient().from('reddit_account_network_configs').insert({
+      reddit_account_id: conta,
+      owner_id: userA.id,
+      proxy_enabled: true,
+      proxy_protocol: 'socks5',
+      proxy_host: 'proxy.exemplo.com',
+      proxy_port: 1080,
+    })
+  })
+
+  it('o dono não desabilita proxy_enabled direto na tabela', async () => {
+    const { error } = await userClient(userA.accessToken)
+      .from('reddit_accounts')
+      .update({ proxy_enabled: false })
+      .eq('id', conta)
+    expect(error).not.toBeNull()
+
+    const check = await adminClient()
+      .from('reddit_accounts')
+      .select('proxy_enabled')
+      .eq('id', conta)
+      .single()
+    expect(check.data!.proxy_enabled).toBe(true)
+  })
+
+  it('o dono não altera proxy_host_masked, protocolo ou porta', async () => {
+    for (const patch of [
+      { proxy_host_masked: 'falso.exemplo.com' },
+      { proxy_protocol: 'http' },
+      { proxy_port: 9999 },
+    ]) {
+      const { error } = await userClient(userA.accessToken)
+        .from('reddit_accounts')
+        .update(patch)
+        .eq('id', conta)
+      expect(error).not.toBeNull()
+    }
+
+    const check = await adminClient()
+      .from('reddit_accounts')
+      .select('proxy_host_masked, proxy_protocol, proxy_port')
+      .eq('id', conta)
+      .single()
+    expect(check.data!.proxy_host_masked).toBe('pr***.exemplo.com')
+    expect(check.data!.proxy_protocol).toBe('socks5')
+    expect(check.data!.proxy_port).toBe(1080)
+  })
+
+  it('o dono não reativa uma conta desconectada mexendo em status', async () => {
+    await adminClient()
+      .from('reddit_accounts')
+      .update({ status: 'disconnected' })
+      .eq('id', conta)
+
+    const { error } = await userClient(userA.accessToken)
+      .from('reddit_accounts')
+      .update({ status: 'connected' })
+      .eq('id', conta)
+    expect(error).not.toBeNull()
+
+    const check = await adminClient()
+      .from('reddit_accounts')
+      .select('status')
+      .eq('id', conta)
+      .single()
+    expect(check.data!.status).toBe('disconnected')
+
+    await adminClient()
+      .from('reddit_accounts')
+      .update({ status: 'connected' })
+      .eq('id', conta)
+  })
+
+  it('o dono não amplia os próprios scopes nem troca a identidade', async () => {
+    for (const patch of [
+      { scopes: ['identity', 'submit', 'modconfig'] },
+      { reddit_user_id: 't2_outro' },
+      { username: 'outro_nome' },
+    ]) {
+      const { error } = await userClient(userA.accessToken)
+        .from('reddit_accounts')
+        .update(patch)
+        .eq('id', conta)
+      expect(error).not.toBeNull()
+    }
+  })
+
+  it('o dono não transfere a conta para outro owner', async () => {
+    const { error } = await userClient(userA.accessToken)
+      .from('reddit_accounts')
+      .update({ owner_id: userB.id })
+      .eq('id', conta)
+    expect(error).not.toBeNull()
+  })
+
+  it('o dono ainda ajusta o que é dele: min_interval_seconds', async () => {
+    const { error } = await userClient(userA.accessToken)
+      .from('reddit_accounts')
+      .update({ min_interval_seconds: 600 })
+      .eq('id', conta)
+    expect(error).toBeNull()
+
+    const check = await adminClient()
+      .from('reddit_accounts')
+      .select('min_interval_seconds')
+      .eq('id', conta)
+      .single()
+    expect(check.data!.min_interval_seconds).toBe(600)
+  })
+
+  it('o trigger interno continua atualizando os campos derivados', async () => {
+    await adminClient()
+      .from('reddit_account_network_configs')
+      .update({ proxy_host: 'outro.exemplo.com', proxy_port: 3128 })
+      .eq('reddit_account_id', conta)
+
+    const check = await adminClient()
+      .from('reddit_accounts')
+      .select('proxy_host_masked, proxy_port')
+      .eq('id', conta)
+      .single()
+    expect(check.data!.proxy_host_masked).toBe('ou***.exemplo.com')
+    expect(check.data!.proxy_port).toBe(3128)
   })
 })
 
