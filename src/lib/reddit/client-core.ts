@@ -225,7 +225,7 @@ export async function getRedditClientFor(
   return createRedditClient({
     accessToken: secrets.accessToken,
     dispatcher,
-    // O mesmo controle de orcamento do Next, com o client deste lado.
+    // O mesmo controle de orçamento do Next, com o client deste lado.
     onBeforeRequest: () => reserveBudgetWith(service),
     onAfterRequest: (snapshot) => reconcileBudgetWith(service, snapshot),
   })

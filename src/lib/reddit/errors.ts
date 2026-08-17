@@ -5,6 +5,18 @@ export type Disposition = 'retryable' | 'unknown' | 'terminal'
 export class RedditError extends Error {
   readonly code: string
   readonly disposition: Disposition
+  /**
+   * Verdadeiro apenas quando repetir a operação de efeito é comprovadamente
+   * seguro — ou seja, quando o Reddit não chegou a processar o pedido.
+   *
+   * É este campo, e NÃO `disposition`, que autoriza o worker a limpar
+   * `submit_attempted_at` e devolver o job à fila. São perguntas diferentes:
+   * `retryable` responde "vale a pena tentar de novo?"; este campo responde
+   * "repetir a operação é seguro?". Reusar `disposition` para as duas faria
+   * qualquer classificação futura como retentável virar, sem que ninguém
+   * percebesse, permissão para republicar.
+   */
+  readonly safeToRetryEffect: boolean
   readonly httpStatus?: number
   readonly retryAfterSeconds?: number
   readonly userMessage: string
@@ -13,6 +25,7 @@ export class RedditError extends Error {
     code: string
     disposition: Disposition
     userMessage: string
+    safeToRetryEffect?: boolean
     httpStatus?: number
     retryAfterSeconds?: number
   }) {
@@ -20,6 +33,11 @@ export class RedditError extends Error {
     this.name = 'RedditError'
     this.code = init.code
     this.disposition = init.disposition
+    // Padrão conservador: sem afirmação explícita, assume-se que repetir NÃO é
+    // seguro. E `unknown` nunca pode ser sobrescrito para verdadeiro — é a
+    // própria definição do estado.
+    this.safeToRetryEffect =
+      init.disposition === 'unknown' ? false : (init.safeToRetryEffect ?? false)
     this.httpStatus = init.httpStatus
     this.retryAfterSeconds = init.retryAfterSeconds
     this.userMessage = init.userMessage
@@ -73,6 +91,8 @@ export function classifyHttp(
     return new RedditError({
       code: 'RATE_LIMITED',
       disposition: 'retryable',
+      // O Reddit recusou explicitamente: não houve processamento a duplicar.
+      safeToRetryEffect: true,
       httpStatus: status,
       userMessage:
         'O Reddit pediu para aguardar antes de novas requisições. A ação será retomada automaticamente.',
@@ -83,6 +103,8 @@ export function classifyHttp(
     return new RedditError({
       code: hasSideEffect ? 'OUTCOME_UNKNOWN' : 'REDDIT_UNAVAILABLE',
       disposition: hasSideEffect ? 'unknown' : 'retryable',
+      // Em leitura não há efeito a duplicar; com efeito, o resultado é ambíguo.
+      safeToRetryEffect: !hasSideEffect,
       httpStatus: status,
       userMessage: hasSideEffect
         ? 'O Reddit não confirmou o resultado desta ação. Ela precisa de revisão manual antes de qualquer nova tentativa.'
@@ -153,6 +175,8 @@ export function classifyNetwork(
     return new RedditError({
       code: isProxy ? 'PROXY_UNAVAILABLE' : 'NETWORK_ERROR',
       disposition: 'retryable',
+      // A requisição não chegou a sair.
+      safeToRetryEffect: true,
       userMessage: isProxy
         ? 'A configuração de rede desta conta está indisponível. Vamos tentar de novo.'
         : 'Não foi possível alcançar o Reddit. Vamos tentar de novo.',
@@ -163,6 +187,7 @@ export function classifyNetwork(
   return new RedditError({
     code: 'NETWORK_ERROR',
     disposition: 'retryable',
+    safeToRetryEffect: true,
     userMessage: 'Falha de rede ao falar com o Reddit. Vamos tentar de novo.',
   })
 }

@@ -1,6 +1,6 @@
-// Sem `server-only`: o worker precisa do mesmo controle de orcamento, e o
-// client chega por parametro em vez de ser criado aqui. Ver
-// `src/lib/supabase/service-factory.ts` para o porque dessa forma.
+// Sem `server-only`: o worker precisa do mesmo controle de orçamento, e o
+// client chega por parâmetro em vez de ser criado aqui. Ver
+// `src/lib/supabase/service-factory.ts` para o porquê dessa forma.
 import { createHash } from 'node:crypto'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { getRedditEnv } from '@/lib/config/env'
@@ -56,6 +56,8 @@ function budgetUnavailable(): RedditError {
   return new RedditError({
     code: 'BUDGET_UNAVAILABLE',
     disposition: 'retryable',
+    // A requisição foi barrada antes de sair: não há efeito a duplicar.
+    safeToRetryEffect: true,
     retryAfterSeconds: 30,
     userMessage:
       'Não foi possível verificar o limite de requisições ao Reddit agora. Tente novamente em instantes.',
@@ -96,6 +98,8 @@ export async function reserveBudgetWith(admin: SupabaseClient): Promise<void> {
     throw new RedditError({
       code: 'BUDGET_BOOTSTRAP',
       disposition: 'retryable',
+      // A requisição foi barrada antes de sair: não há efeito a duplicar.
+      safeToRetryEffect: true,
       retryAfterSeconds: 5,
       userMessage:
         'Verificando o limite de requisições ao Reddit. Tente novamente em alguns segundos.',
@@ -112,6 +116,8 @@ export async function reserveBudgetWith(admin: SupabaseClient): Promise<void> {
   throw new RedditError({
     code: 'BUDGET_EXHAUSTED',
     disposition: 'retryable',
+    // A requisição foi barrada antes de sair: não há efeito a duplicar.
+    safeToRetryEffect: true,
     retryAfterSeconds: segundos,
     userMessage: `O limite de requisições ao Reddit foi atingido. Aguarde cerca de ${segundos} segundos e tente novamente.`,
   })

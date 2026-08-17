@@ -7,8 +7,8 @@ import {
 } from './budget-core'
 import type { RateLimitSnapshot } from './types'
 
-// A logica mora em `budget-core.ts`, sem `server-only`, para que o worker use
-// exatamente o mesmo controle. Aqui ficam so os involucros do Next, que
+// A lógica mora em `budget-core.ts`, sem `server-only`, para que o worker use
+// exatamente o mesmo controle. Aqui ficam só os invólucros do Next, que
 // injetam o client administrativo.
 export { BUDGET_THRESHOLD } from './budget-core'
 export type { Budget } from './budget-core'
