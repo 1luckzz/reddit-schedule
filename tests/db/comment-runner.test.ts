@@ -1,7 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { MockAgent } from 'undici'
 import { adminClient, cleanupTestUsers, createTestUser } from './helpers'
-import { acquireQueueLock, releaseQueueLock } from './queue-lock'
 import {
   criarJob,
   isolarOrcamento,
@@ -18,7 +17,6 @@ const commentPath = (p: string) => p.startsWith('/api/comment')
 const pool = () => agent.get('https://oauth.reddit.com')
 
 beforeAll(async () => {
-  await acquireQueueLock()
   await isolarOrcamento('cr')
   userA = await createTestUser(`cr-${Date.now()}@teste.local`)
   cenario = await montarCenario(userA.id, 'cr')
@@ -30,7 +28,6 @@ afterEach(async () => {
 
 afterAll(async () => {
   await cleanupTestUsers([userA.id])
-  await releaseQueueLock()
 })
 
 function mock() {

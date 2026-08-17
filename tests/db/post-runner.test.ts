@@ -1,7 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { MockAgent } from 'undici'
 import { adminClient, cleanupTestUsers, createTestUser } from './helpers'
-import { acquireQueueLock, releaseQueueLock } from './queue-lock'
 import {
   criarJob,
   isolarOrcamento,
@@ -22,8 +21,6 @@ const pool = () => agent.get('https://oauth.reddit.com')
 
 beforeAll(async () => {
   // Os jobs deste arquivo ficam em `processing`; um reaper de outro arquivo
-  // rodando em paralelo os arrancaria no meio da execução.
-  await acquireQueueLock()
   await isolarOrcamento('pr')
   userA = await createTestUser(`pr-${Date.now()}@teste.local`)
   cenario = await montarCenario(userA.id, 'pr')
@@ -35,7 +32,6 @@ afterEach(async () => {
 
 afterAll(async () => {
   await cleanupTestUsers([userA.id])
-  await releaseQueueLock()
 })
 
 /** MockAgent limpo por teste: intercepts não vazam entre casos. */

@@ -1,7 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { adminClient, cleanupTestUsers, createTestUser } from './helpers'
 import { withSql } from './sql'
-import { acquireQueueLock, releaseQueueLock } from './queue-lock'
 
 let userA: { id: string; accessToken: string }
 let conta: string
@@ -37,8 +36,6 @@ const claim = (workerId: string, batch = 10) =>
 
 beforeAll(async () => {
   // A fila é global: sem isto, os arquivos que reivindicam jobs pegam as
-  // linhas uns dos outros quando o Vitest os roda em paralelo.
-  await acquireQueueLock()
   const stamp = Date.now()
   userA = await createTestUser(`cl-${stamp}@teste.local`)
 
@@ -83,9 +80,7 @@ beforeEach(async () => {
 })
 
 afterAll(async () => {
-  // Limpar antes de liberar: o próximo arquivo não pode herdar jobs vencidos.
   await cleanupTestUsers([userA.id])
-  await releaseQueueLock()
 })
 
 describe('claim_due_posts', () => {
@@ -156,6 +151,59 @@ describe('claim_due_posts', () => {
     await criarPost()
     const { data } = await claim('worker-1', 2)
     expect(data).toHaveLength(2)
+  })
+
+  it('respeita o batch mesmo depois de muitas chamadas na mesma conexão', async () => {
+    // Não é redundante com o teste acima. O plpgsql troca o plano específico
+    // pelo genérico depois de algumas execuções, e foi só no plano genérico
+    // que o limite deixou de valer: o planejador reexecutava a subquery de
+    // `for update ... limit` por linha externa, reivindicando um lote novo a
+    // cada reexecução.
+    //
+    // O `for` abaixo é o que leva o plpgsql até o plano genérico. Sem ele o
+    // teste passa mesmo com a função errada.
+    for (let i = 0; i < 8; i++) {
+      await adminClient()
+        .from('scheduled_posts')
+        .delete()
+        .eq('owner_id', userA.id)
+      for (let j = 0; j < 5; j++) await criarPost()
+
+      const { data } = await claim(`worker-${i}`, 2)
+      expect(data, `chamada ${i + 1}`).toHaveLength(2)
+    }
+  })
+
+  it('o batch limita também o claim de comentários', async () => {
+    const post = await criarPost({
+      status: 'published',
+      reddit_fullname: `t3_${Math.random().toString(36).slice(2, 10)}`,
+      published_at: new Date().toISOString(),
+    })
+
+    for (let i = 0; i < 8; i++) {
+      await adminClient()
+        .from('scheduled_comments')
+        .delete()
+        .eq('owner_id', userA.id)
+      for (let j = 0; j < 5; j++) {
+        await adminClient().from('scheduled_comments').insert({
+          owner_id: userA.id,
+          scheduled_post_id: post,
+          reddit_account_id: conta,
+          body: 'comentário',
+          mode: 'absolute',
+          scheduled_at: new Date(Date.now() - 30_000).toISOString(),
+          status: 'scheduled',
+        })
+      }
+
+      const { data } = await adminClient().rpc('claim_due_comments', {
+        p_worker_id: `worker-${i}`,
+        p_batch: 2,
+      })
+      expect(data, `chamada ${i + 1}`).toHaveLength(2)
+    }
   })
 
   it('entrega os mais antigos primeiro', async () => {

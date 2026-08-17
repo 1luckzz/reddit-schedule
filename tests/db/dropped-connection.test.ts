@@ -4,7 +4,6 @@ import { connect as netConnect } from 'node:net'
 import type { AddressInfo } from 'node:net'
 import { Agent } from 'undici'
 import { adminClient, cleanupTestUsers, createTestUser } from './helpers'
-import { acquireQueueLock, releaseQueueLock } from './queue-lock'
 import {
   criarJob,
   isolarOrcamento,
@@ -40,8 +39,6 @@ let recebeuPost = false
 
 beforeAll(async () => {
   // Este arquivo chama claim e reaper, que varrem a fila inteira: sem o lock
-  // ele reivindicaria e devolveria jobs de outros arquivos de teste.
-  await acquireQueueLock()
   await isolarOrcamento('dc')
   userA = await createTestUser(`dc-${Date.now()}@teste.local`)
   cenario = await montarCenario(userA.id, 'dc')
@@ -72,7 +69,6 @@ beforeAll(async () => {
 afterAll(async () => {
   await cleanupTestUsers([userA.id])
   await new Promise<void>((ok) => servidor.close(() => ok()))
-  await releaseQueueLock()
 })
 
 /**
