@@ -535,18 +535,26 @@ git commit -m "feat: submissao de comentario no reddit"
 ### Task 5: Infraestrutura do worker
 
 **Files:**
-- Create: `src/lib/supabase/service-client.ts`
+- Create: `src/lib/supabase/service-factory.ts`
 - Modify: `src/lib/supabase/admin.ts`
+- Create: `worker/supabase.ts`
+- Create: `src/lib/reddit/client-core.ts`
+- Modify: `src/lib/reddit/reddit-client-factory.ts`
+- Modify: `src/lib/auth/ownership.ts`
 - Create: `src/lib/worker/load-account.ts`
 - Create: `src/lib/worker/consistency.ts`
 - Create: `worker/tsconfig.json`
 - Test: `tests/worker/consistency.test.ts`
+- Test: `tests/worker/service-boundary.test.ts`
 - Test: `tests/db/load-account.test.ts`
 
 **Interfaces:**
 - Produces:
-  - `createServiceClient()` — client `service_role` sem `server-only`
-  - `loadAccountForWorker(accountId): Promise<VerifiedAccount>`
+  - `makeServiceClient(url, secretKey)` — factory **pura**, não lê `process.env`
+  - `createAdminSupabase()` — invólucro `server-only` para o Next
+  - `workerServiceClient()` — invólucro Node para o worker
+  - `getRedditClientFor(service, account, opts)` — núcleo sem sessão
+  - `loadAccountForWorker(service, accountId): Promise<VerifiedAccount>`
   - `assertJobConsistency(job): void` — lança `InconsistentOwnershipError`
 
 **O problema a resolver.** O worker é um processo Node comum, fora do Next.
@@ -554,10 +562,30 @@ Ele não pode importar `src/lib/supabase/admin.ts`, que declara
 `import 'server-only'` — esse pacote lança fora do ambiente de servidor React.
 Tampouco pode usar `assertAccountAccess`, que depende de sessão HTTP.
 
-**A solução, sem afrouxar nada:** extrair a criação do client para
-`service-client.ts` (sem a marca), e manter `admin.ts` como um invólucro que
-declara `server-only` e reexporta. O Next continua protegido contra import em
-Client Component; o worker importa o módulo base.
+**A solução: uma factory pura, dois invólucros.**
+
+```
+service-factory.ts        makeServiceClient(url, key)   ← não conhece process.env
+        │
+        ├── admin.ts      'server-only' + lê env         ← caminho do Next
+        └── worker/supabase.ts   lê env                  ← caminho do worker
+```
+
+A tentação óbvia seria um `service-client.ts` compartilhado que lesse o
+ambiente e não declarasse `server-only`. Isso criaria exatamente o que não
+queremos: um módulo dentro de `src/`, importável por qualquer arquivo
+`'use client'`, contendo a leitura da chave secreta. A marca `server-only`
+deixaria de proteger, porque o módulo desprotegido é que faria o trabalho.
+
+Com a factory pura, o módulo compartilhado não tem nada a vazar: ele recebe a
+chave como argumento. Quem lê o ambiente é sempre um invólucro que o cliente
+comprovadamente não alcança — `admin.ts` pela marca, `worker/supabase.ts` por
+estar fora da árvore de módulos do Next.
+
+**Por que `loadAccountForWorker` passa a receber o client.** Pela mesma razão:
+se ele criasse o próprio client, voltaria a precisar da chave, e um módulo em
+`src/lib/worker/` seria de novo um caminho até ela. Recebendo o client, todo o
+`src/lib/worker/` fica livre de segredos.
 
 A autorização, no worker, não vem de sessão — vem de o job já estar no banco
 com `owner_id` coerente, garantido por FKs compostas. `assertJobConsistency`
@@ -616,58 +644,193 @@ describe('assertJobConsistency', () => {
   })
 })
 
-describe('separação entre admin e service client', () => {
+```
+
+- [ ] **Step 1b: Escrever o teste da fronteira do service client**
+
+Este arquivo é separado porque não testa comportamento e sim uma propriedade
+estrutural do repositório — o tipo de coisa que se quebra por descuido meses
+depois, sem nenhum teste de unidade falhar.
+
+```ts
+// tests/worker/service-boundary.test.ts
+import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { dirname, join, relative, resolve } from 'node:path'
+import { globSync } from 'node:fs'
+import { makeServiceClient } from '@/lib/supabase/service-factory'
+
+const FACTORY = 'src/lib/supabase/service-factory.ts'
+
+describe('a factory é pura', () => {
+  it('não lê process.env em lugar nenhum', () => {
+    const src = readFileSync(FACTORY, 'utf8')
+    expect(src).not.toContain('process.env')
+  })
+
+  it('não menciona o nome da variável da chave secreta', () => {
+    const src = readFileSync(FACTORY, 'utf8')
+    expect(src).not.toContain('SUPABASE_SECRET_KEY')
+  })
+
+  it('não importa o módulo de ambiente', () => {
+    const src = readFileSync(FACTORY, 'utf8')
+    expect(src).not.toMatch(/from\s+['"].*config\/env['"]/)
+  })
+
+  it('usa exatamente a URL e a chave que recebeu', () => {
+    // Prova que a factory não tem fonte alternativa de credencial.
+    const c = makeServiceClient('http://exemplo.local', 'chave-de-teste')
+    expect(c).toBeDefined()
+    // supabase-js guarda a chave para montar o header; conferimos que é a nossa.
+    expect(JSON.stringify(c)).toContain('chave-de-teste')
+  })
+
+  it('exige url e chave não vazias', () => {
+    expect(() => makeServiceClient('', 'k')).toThrow()
+    expect(() => makeServiceClient('http://exemplo.local', '')).toThrow()
+  })
+})
+
+describe('quem pode ler a chave secreta', () => {
+  const permitidos = new Set([
+    // Validação de ambiente na subida: não entrega a chave a ninguém.
+    'src/lib/config/env.ts',
+    // Invólucro do Next, protegido por server-only.
+    'src/lib/supabase/admin.ts',
+    // Invólucro do worker, fora da árvore de módulos do Next.
+    'worker/supabase.ts',
+  ])
+
+  it('nenhum outro módulo do repositório menciona SUPABASE_SECRET_KEY', () => {
+    const arquivos = [
+      ...globSync('src/**/*.{ts,tsx}'),
+      ...globSync('worker/**/*.ts'),
+    ].map((p) => relative(process.cwd(), p).replaceAll('\\', '/'))
+
+    const infratores = arquivos.filter(
+      (f) =>
+        !permitidos.has(f) &&
+        readFileSync(f, 'utf8').includes('SUPABASE_SECRET_KEY'),
+    )
+    expect(infratores).toEqual([])
+  })
+
   it('admin.ts continua marcado como server-only', () => {
     const src = readFileSync('src/lib/supabase/admin.ts', 'utf8')
     expect(src).toContain("import 'server-only'")
   })
 
-  it('service-client.ts NÃO é server-only, para o worker poder importar', () => {
-    const src = readFileSync('src/lib/supabase/service-client.ts', 'utf8')
-    expect(src).not.toContain("import 'server-only'")
+  it('o invólucro do worker NÃO é server-only, senão o worker não sobe', () => {
+    const src = readFileSync('worker/supabase.ts', 'utf8')
+    expect(src).not.toContain("server-only")
   })
+})
 
-  it('service-client.ts nunca usa variável NEXT_PUBLIC_ para a chave secreta', () => {
-    const src = readFileSync('src/lib/supabase/service-client.ts', 'utf8')
-    expect(src).toContain('SUPABASE_SECRET_KEY')
-    expect(src).not.toMatch(/NEXT_PUBLIC_[A-Z_]*SECRET/)
-  })
-
-  it('nenhum componente de cliente importa o service client', () => {
-    for (const arquivo of [
-      'src/components/posts/new-post-form.tsx',
-      'src/components/accounts/network-form.tsx',
-      'src/components/communities/sync-button.tsx',
+describe('nenhum módulo de cliente alcança o service client', () => {
+  // Percorre o grafo de imports a partir de cada arquivo 'use client'.
+  // Verificar só o import direto não bastaria: bastaria um módulo
+  // intermediário para o segredo voltar ao bundle do cliente.
+  function resolverImport(deArquivo: string, especificador: string) {
+    const base = especificador.startsWith('@/')
+      ? resolve('src', especificador.slice(2))
+      : especificador.startsWith('.')
+        ? resolve(dirname(deArquivo), especificador)
+        : null
+    if (!base) return null
+    for (const cand of [
+      `${base}.ts`,
+      `${base}.tsx`,
+      join(base, 'index.ts'),
+      join(base, 'index.tsx'),
     ]) {
-      const src = readFileSync(arquivo, 'utf8')
-      expect(src).toContain("'use client'")
-      expect(src).not.toContain('service-client')
-      expect(src).not.toContain('createServiceClient')
+      try {
+        readFileSync(cand, 'utf8')
+        return relative(process.cwd(), cand).replaceAll('\\', '/')
+      } catch {
+        // não é este
+      }
+    }
+    return null
+  }
+
+  function alcancaveis(raiz: string): Set<string> {
+    const vistos = new Set<string>()
+    const fila = [raiz]
+    while (fila.length > 0) {
+      const atual = fila.pop()!
+      if (vistos.has(atual)) continue
+      vistos.add(atual)
+      const src = readFileSync(atual, 'utf8')
+      for (const m of src.matchAll(/from\s+['"]([^'"]+)['"]/g)) {
+        const alvo = resolverImport(atual, m[1])
+        if (alvo) fila.push(alvo)
+      }
+    }
+    return vistos
+  }
+
+  it('nenhum arquivo use client chega a admin, à factory ou à chave', () => {
+    const clientes = globSync('src/**/*.{ts,tsx}')
+      .map((p) => relative(process.cwd(), p).replaceAll('\\', '/'))
+      .filter((f) => /^\s*['"]use client['"]/.test(readFileSync(f, 'utf8')))
+
+    expect(clientes.length).toBeGreaterThan(0) // senão o teste não prova nada
+
+    const proibidos = [
+      'src/lib/supabase/admin.ts',
+      'src/lib/supabase/service-factory.ts',
+      'src/lib/config/env.ts',
+    ]
+
+    for (const cliente of clientes) {
+      const grafo = alcancaveis(cliente)
+      for (const proibido of proibidos) {
+        expect(
+          grafo.has(proibido),
+          `${cliente} alcança ${proibido}`,
+        ).toBe(false)
+      }
     }
   })
 })
 ```
 
-- [ ] **Step 2: Implementar a separação de clients**
+O `expect(clientes.length).toBeGreaterThan(0)` não é decorativo: sem ele, um
+glob que parasse de casar faria o teste passar varrendo lista vazia.
+
+- [ ] **Step 2: Implementar a factory pura e os dois invólucros**
 
 ```ts
-// src/lib/supabase/service-client.ts
+// src/lib/supabase/service-factory.ts
 import { createClient } from '@supabase/supabase-js'
-import { getCoreEnv } from '@/lib/config/env'
+import type { SupabaseClient } from '@supabase/supabase-js'
 
 /**
- * Client com a chave secreta: IGNORA RLS por completo.
+ * Cria um client com a chave secreta: IGNORA RLS por completo.
  *
- * Este módulo NÃO declara `server-only` de propósito — o worker é um processo
- * Node comum, fora do Next, e aquele pacote lança fora do ambiente de
- * servidor React. Para uso dentro do Next, importe `admin.ts`, que declara a
- * marca e reexporta daqui.
+ * Esta função é deliberadamente PURA — recebe URL e chave como argumentos e
+ * nunca toca em `process.env`. Isso é o que permite que ela seja compartilhada
+ * entre o Next e o worker sem virar um caminho até o segredo: o módulo em si
+ * não tem nada a vazar.
  *
- * Nunca importe este arquivo de um Client Component. Há teste verificando.
+ * Quem lê o ambiente são os invólucros, cada um no seu lado da fronteira:
+ *   - `src/lib/supabase/admin.ts`, marcado `server-only`, para o Next;
+ *   - `worker/supabase.ts`, fora da árvore de módulos do Next, para o worker.
+ *
+ * Não chame esta função diretamente de código de aplicação. Use um invólucro.
  */
-export function createServiceClient() {
-  const env = getCoreEnv()
-  return createClient(env.NEXT_PUBLIC_SUPABASE_URL, env.SUPABASE_SECRET_KEY, {
+export function makeServiceClient(
+  url: string,
+  secretKey: string,
+): SupabaseClient {
+  // Falhar aqui é muito melhor que criar um client mudo que erra 401 depois.
+  if (!url) throw new Error('URL do Supabase ausente ao criar service client.')
+  if (!secretKey) {
+    throw new Error('Chave secreta ausente ao criar service client.')
+  }
+
+  return createClient(url, secretKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   })
 }
@@ -676,18 +839,175 @@ export function createServiceClient() {
 ```ts
 // src/lib/supabase/admin.ts
 import 'server-only'
-import { createServiceClient } from './service-client'
+import { getCoreEnv } from '@/lib/config/env'
+import { makeServiceClient } from './service-factory'
 
 /**
  * Client com a chave secreta para uso dentro do Next: IGNORA RLS.
+ *
+ * A marca `server-only` acima é o que impede este módulo — e portanto a
+ * leitura da chave — de entrar em um bundle de cliente.
  *
  * Nunca chame isto com um id vindo do cliente sem antes confirmar a posse do
  * recurso — use os helpers de src/lib/auth/ownership.ts.
  */
 export function createAdminSupabase() {
-  return createServiceClient()
+  const env = getCoreEnv()
+  return makeServiceClient(
+    env.NEXT_PUBLIC_SUPABASE_URL,
+    env.SUPABASE_SECRET_KEY,
+  )
 }
 ```
+
+```ts
+// worker/supabase.ts
+import { makeServiceClient } from '../src/lib/supabase/service-factory'
+
+/**
+ * Client do worker. Mesma factory do Next, ambiente lido aqui.
+ *
+ * Este arquivo mora em `worker/` e não em `src/` de propósito: nada dentro do
+ * Next o importa, então a leitura da chave fica fora do alcance de qualquer
+ * bundle de cliente sem depender da marca `server-only` — que, aliás, não
+ * poderia ser usada aqui, porque lança fora do ambiente de servidor React.
+ *
+ * O worker é um processo longo: um único client basta para todo o ciclo.
+ */
+let cache: ReturnType<typeof makeServiceClient> | null = null
+
+export function workerServiceClient() {
+  if (cache) return cache
+  cache = makeServiceClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL ?? '',
+    process.env.SUPABASE_SECRET_KEY ?? '',
+  )
+  return cache
+}
+```
+
+- [ ] **Step 2b: Tirar o núcleo do client Reddit de dentro do `server-only`**
+
+**Este passo é obrigatório e não estava explícito no plano original.** Sem ele
+o worker não sobe: `reddit-client-factory.ts` declara `server-only` e importa
+`ownership.ts`, que importa `require-user.ts`, que importa `next/headers`.
+Nenhum desses três existe fora de uma requisição do Next.
+
+O corte é o mesmo da factory do Supabase — **separar quem decide de quem faz**:
+
+| Camada | Módulo | Sabe de sessão? |
+|---|---|---|
+| Núcleo | `src/lib/reddit/client-core.ts` | não — recebe client e conta já verificada |
+| Next | `src/lib/reddit/reddit-client-factory.ts` | sim — `assertAccountAccess`, depois delega |
+| Worker | chama o núcleo direto | não — a conta veio do job, já coerente |
+
+Nada é afrouxado: `getRedditClient` continua exigindo posse verificada antes de
+qualquer coisa. O núcleo apenas deixa de *presumir* que a verificação veio de
+uma sessão HTTP — no worker ela vem das FKs compostas e de
+`assertJobConsistency`.
+
+```ts
+// src/lib/reddit/client-core.ts
+// Sem `server-only`: este módulo roda no Next E no worker.
+// Sem `next/headers`, sem `requireUser`, sem process.env.
+import type { SupabaseClient } from '@supabase/supabase-js'
+import type { Dispatcher } from 'undici'
+import type { NetworkConfig, VerifiedAccount } from '@/lib/auth/ownership'
+import { decryptSecret, encryptSecret } from '@/lib/crypto/aes-gcm'
+import { createRedditClient, type RedditClient } from './client'
+import { RedditError } from './errors'
+import { refreshAccessToken } from './auth'
+import type { RedditTokenResponse } from './types'
+
+const REFRESH_MARGIN_MS = 120_000
+
+/**
+ * Segredos da conta, decifrados. O AAD amarra cada valor à sua coluna e ao id
+ * da conta — trocar um ciphertext de conta por outro faz a decifragem falhar.
+ */
+export async function readAccountSecrets(
+  service: SupabaseClient,
+  account: VerifiedAccount,
+) { /* corpo movido de ownership.getAccountSecrets, com o client como parâmetro */ }
+
+export async function readNetworkConfig(
+  service: SupabaseClient,
+  account: VerifiedAccount,
+): Promise<NetworkConfig | null> { /* idem getNetworkConfig */ }
+
+export async function persistTokensWith(
+  service: SupabaseClient,
+  accountId: string,
+  token: RedditTokenResponse,
+): Promise<void> { /* idem persistTokens */ }
+
+/**
+ * Monta o client de uma conta **cuja posse já foi verificada pelo chamador**.
+ *
+ * No Next quem verifica é `assertAccountAccess`; no worker, a coerência de
+ * owner garantida pelas FKs compostas mais `assertJobConsistency`. O núcleo
+ * não escolhe entre as duas: exige que uma delas já tenha acontecido, e o
+ * tipo `VerifiedAccount` é o que registra isso.
+ */
+export async function getRedditClientFor(
+  service: SupabaseClient,
+  account: VerifiedAccount,
+  opts: { dispatcher?: Dispatcher } = {},
+): Promise<RedditClient> {
+  // Mesma lógica de renovação com lock que já existe hoje em
+  // getRedditClient, com `service` no lugar de createAdminSupabase().
+}
+```
+
+`reddit-client-factory.ts` mantém a marca e encolhe:
+
+```ts
+// src/lib/reddit/reddit-client-factory.ts
+import 'server-only'
+import { createAdminSupabase } from '@/lib/supabase/admin'
+import { assertAccountAccess, type VerifiedAccount } from '@/lib/auth/ownership'
+import { getRedditClientFor } from './client-core'
+
+/** Caminho do Next: confirma a posse contra a sessão, depois delega. */
+export async function getRedditClient(
+  account: VerifiedAccount,
+  opts: { dispatcher?: Dispatcher; skipOwnershipCheck?: boolean } = {},
+): Promise<RedditClient> {
+  const verified = opts.skipOwnershipCheck
+    ? account
+    : await assertAccountAccess(account.id)
+  return getRedditClientFor(createAdminSupabase(), verified, opts)
+}
+```
+
+Acrescente ao `tests/worker/service-boundary.test.ts`:
+
+```ts
+describe('o núcleo do client Reddit é utilizável fora do Next', () => {
+  for (const modulo of [
+    'src/lib/reddit/client-core.ts',
+    'src/lib/worker/load-account.ts',
+    'src/lib/worker/consistency.ts',
+  ]) {
+    it(`${modulo} não depende de sessão nem de server-only`, () => {
+      const src = readFileSync(modulo, 'utf8')
+      expect(src).not.toContain("'server-only'")
+      expect(src).not.toContain('next/headers')
+      expect(src).not.toContain('requireUser')
+      expect(src).not.toContain('createAdminSupabase')
+    })
+  }
+
+  it('o factory do Next continua exigindo posse verificada', () => {
+    const src = readFileSync('src/lib/reddit/reddit-client-factory.ts', 'utf8')
+    expect(src).toContain("import 'server-only'")
+    expect(src).toContain('assertAccountAccess')
+  })
+})
+```
+
+Os testes existentes de `reddit-client-factory` devem continuar passando sem
+alteração — é assim que sabemos que o corte preservou o comportamento.
 
 - [ ] **Step 3: Implementar a checagem de consistência**
 
@@ -735,7 +1055,7 @@ export function assertJobConsistency(job: JobOwnership): void {
 
 ```ts
 // src/lib/worker/load-account.ts
-import { createServiceClient } from '@/lib/supabase/service-client'
+import type { SupabaseClient } from '@supabase/supabase-js'
 import type { VerifiedAccount } from '@/lib/auth/ownership'
 
 export class AccountUnavailableError extends Error {
@@ -748,15 +1068,18 @@ export class AccountUnavailableError extends Error {
 /**
  * Carrega a conta de um job para o worker.
  *
+ * Recebe o client em vez de criá-lo: assim este módulo — e todo o resto de
+ * `src/lib/worker/` — nunca precisa conhecer a chave secreta.
+ *
  * No worker não existe sessão: a autorização vem de o job já estar no banco
  * com owner_id coerente, garantido por FKs compostas e reconferido por
  * assertJobConsistency. Por isso o tipo VerifiedAccount é produzido aqui sem
  * passar por assertAccountAccess, que depende de requisição HTTP.
  */
 export async function loadAccountForWorker(
+  service: SupabaseClient,
   accountId: string,
 ): Promise<VerifiedAccount> {
-  const service = createServiceClient()
   const { data, error } = await service
     .from('reddit_accounts')
     .select(
@@ -812,14 +1135,14 @@ afterAll(async () => {
 
 describe('loadAccountForWorker', () => {
   it('carrega a conta conectada com o owner correto', async () => {
-    const c = await loadAccountForWorker(conta)
+    const c = await loadAccountForWorker(adminClient(), conta)
     expect(c.id).toBe(conta)
     expect(c.owner_id).toBe(userA.id)
   })
 
   it('recusa conta inexistente', async () => {
     await expect(
-      loadAccountForWorker('3f2504e0-4f89-11d3-9a0c-0305e82c3301'),
+      loadAccountForWorker(adminClient(), '3f2504e0-4f89-11d3-9a0c-0305e82c3301'),
     ).rejects.toBeInstanceOf(AccountUnavailableError)
   })
 
@@ -829,7 +1152,7 @@ describe('loadAccountForWorker', () => {
       .update({ status: 'disconnected' })
       .eq('id', conta)
 
-    await expect(loadAccountForWorker(conta)).rejects.toBeInstanceOf(
+    await expect(loadAccountForWorker(adminClient(), conta)).rejects.toBeInstanceOf(
       AccountUnavailableError,
     )
 
@@ -846,7 +1169,7 @@ describe('loadAccountForWorker', () => {
       .eq('id', conta)
 
     try {
-      await loadAccountForWorker(conta)
+      await loadAccountForWorker(adminClient(), conta)
       throw new Error('deveria ter lançado')
     } catch (e) {
       expect((e as Error).message).toMatch(/não está disponível/i)

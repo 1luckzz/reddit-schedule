@@ -7,6 +7,159 @@ Tasks 6 a 9 fecham o **Bloco A**.
 
 ---
 
+### Task 5.5: `safeToRetryEffect` em `RedditError`
+
+**Files:**
+- Modify: `src/lib/reddit/errors.ts`
+- Modify: `tests/reddit/errors.test.ts`
+
+**Por que uma propriedade nova, e não reusar `disposition`.** As duas
+respondem perguntas diferentes:
+
+| Pergunta | Campo |
+|---|---|
+| Vale a pena tentar de novo? | `disposition === 'retryable'` |
+| Repetir a operação de efeito é seguro? | `safeToRetryEffect` |
+
+Hoje elas coincidem, porque todo `retryable` que definimos é comprovadamente
+pré-processamento. Mas amarrar a decisão de limpar `submit_attempted_at` à
+`disposition` significa que qualquer classificação futura como `retryable` —
+feita por alguém que só pensou em "vale a pena tentar" — passaria a autorizar
+uma republicação. A propriedade explícita torna essa autorização deliberada.
+
+**Regra:** apenas `safeToRetryEffect === true` pode limpar
+`submit_attempted_at` e devolver o job à fila. `unknown` é sempre `false`.
+
+- [ ] **Step 1: Acrescentar os testes**
+
+```ts
+// acrescentar a tests/reddit/errors.test.ts
+
+describe('safeToRetryEffect', () => {
+  it('429 é seguro repetir: o Reddit recusou, não processou', () => {
+    expect(classifyHttp(429, {}, true)!.safeToRetryEffect).toBe(true)
+  })
+
+  it('falha de rede antes do envio é segura', () => {
+    const e = classifyNetwork(
+      Object.assign(new Error('dns'), { code: 'ENOTFOUND' }),
+      false,
+    )
+    expect(e.safeToRetryEffect).toBe(true)
+  })
+
+  it('5xx em requisição de efeito NÃO é seguro repetir', () => {
+    for (const status of [500, 502, 503, 504]) {
+      expect(classifyHttp(status, {}, true)!.safeToRetryEffect).toBe(false)
+    }
+  })
+
+  it('5xx em leitura é seguro: não há efeito a duplicar', () => {
+    for (const status of [500, 502, 503, 504]) {
+      expect(classifyHttp(status, {}, false)!.safeToRetryEffect).toBe(true)
+    }
+  })
+
+  it('queda de conexão após o envio NÃO é segura', () => {
+    const e = classifyNetwork(
+      Object.assign(new Error('reset'), { code: 'ECONNRESET' }),
+      true,
+    )
+    expect(e.safeToRetryEffect).toBe(false)
+  })
+
+  it('INVARIANTE: todo erro unknown tem safeToRetryEffect falso', () => {
+    const amostras = [
+      classifyHttp(500, {}, true)!,
+      classifyHttp(503, {}, true)!,
+      classifyNetwork(
+        Object.assign(new Error('x'), { code: 'ECONNRESET' }),
+        true,
+      ),
+    ]
+    for (const e of amostras) {
+      expect(e.disposition).toBe('unknown')
+      expect(e.safeToRetryEffect).toBe(false)
+    }
+  })
+
+  it('erro terminal não autoriza repetição de efeito', () => {
+    // Não retenta de qualquer forma, mas o campo precisa ser coerente.
+    expect(classifyHttp(403, {}, true)!.safeToRetryEffect).toBe(false)
+  })
+})
+```
+
+- [ ] **Step 2: Implementar**
+
+Em `RedditError`, acrescente o campo obrigatório:
+
+```ts
+export class RedditError extends Error {
+  readonly code: string
+  readonly disposition: Disposition
+  /**
+   * Verdadeiro apenas quando repetir a operação de efeito é comprovadamente
+   * seguro — ou seja, quando o Reddit não chegou a processar o pedido.
+   *
+   * É este campo, e não `disposition`, que autoriza o worker a limpar
+   * `submit_attempted_at` e devolver o job à fila. Reusar `disposition` para
+   * isso faria qualquer classificação futura como "retryable" virar
+   * permissão para republicar.
+   */
+  readonly safeToRetryEffect: boolean
+  readonly httpStatus?: number
+  readonly retryAfterSeconds?: number
+  readonly userMessage: string
+
+  constructor(init: {
+    code: string
+    disposition: Disposition
+    userMessage: string
+    safeToRetryEffect?: boolean
+    httpStatus?: number
+    retryAfterSeconds?: number
+  }) {
+    super(`${init.code} (${init.disposition})`)
+    this.name = 'RedditError'
+    this.code = init.code
+    this.disposition = init.disposition
+    // Padrão conservador: sem afirmação explícita, assume-se que repetir NÃO
+    // é seguro. E `unknown` nunca pode ser sobrescrito para true.
+    this.safeToRetryEffect =
+      init.disposition === 'unknown' ? false : (init.safeToRetryEffect ?? false)
+    this.httpStatus = init.httpStatus
+    this.retryAfterSeconds = init.retryAfterSeconds
+    this.userMessage = init.userMessage
+  }
+}
+```
+
+E marque `safeToRetryEffect: true` apenas em:
+
+- `429` (`RATE_LIMITED`) — recusa explícita, nada foi processado;
+- `5xx` **em leitura** (`REDDIT_UNAVAILABLE`) — sem efeito a duplicar;
+- falhas de rede **antes** do envio, em `classifyNetwork` quando
+  `sideEffectAttempted` é falso.
+
+Em `budget.ts`, `BUDGET_EXHAUSTED` e `BUDGET_BOOTSTRAP` também recebem
+`safeToRetryEffect: true`: nenhuma requisição chegou a sair. `BUDGET_UNAVAILABLE`
+idem.
+
+- [ ] **Step 3: Rodar, verificar e commitar**
+
+```powershell
+npx vitest run tests/reddit/errors.test.ts
+npm run verify
+```
+
+```bash
+git add -A
+git commit -m "feat: safeToRetryEffect separa retentativa de repeticao de efeito"
+```
+
+---
+
 ### Task 6: Runner de publicação
 
 **Files:**
@@ -17,7 +170,7 @@ Tasks 6 a 9 fecham o **Bloco A**.
 
 **Interfaces:**
 - Produces:
-  - `logExecution(entry): Promise<void>` — grava em `execution_logs`, sanitizado
+  - `logExecution(service, entry): Promise<void>` — grava em `execution_logs`, sanitizado
   - `nextAttemptAt(retryCount, retryAfterSeconds?): Date`
   - `MAX_RETRIES`
   - `runPost(job, opts): Promise<PostOutcome>`
@@ -114,7 +267,7 @@ async function ultimoLog() {
 
 describe('logExecution', () => {
   it('grava a entrada', async () => {
-    await logExecution({
+    await logExecution(adminClient(), {
       ownerId: userA.id,
       action: 'submit_post',
       outcome: 'success',
@@ -129,7 +282,7 @@ describe('logExecution', () => {
   })
 
   it('SANITIZA a mensagem antes de gravar', async () => {
-    await logExecution({
+    await logExecution(adminClient(), {
       ownerId: userA.id,
       action: 'submit_post',
       outcome: 'failure',
@@ -146,7 +299,7 @@ describe('logExecution', () => {
   it('falha ao gravar log não derruba a operação', async () => {
     // Log é telemetria: um problema aqui não pode custar a publicação.
     await expect(
-      logExecution({
+      logExecution(adminClient(), {
         ownerId: '3f2504e0-4f89-11d3-9a0c-0305e82c3301',
         action: 'submit_post',
         outcome: 'success',
@@ -155,7 +308,7 @@ describe('logExecution', () => {
   })
 
   it('trunca mensagem muito longa', async () => {
-    await logExecution({
+    await logExecution(adminClient(), {
       ownerId: userA.id,
       action: 'submit_post',
       outcome: 'failure',
@@ -199,7 +352,9 @@ export function nextAttemptAt(
 
 ```ts
 // src/lib/worker/log.ts
-import { createServiceClient } from '@/lib/supabase/service-client'
+// Nada aqui lê a chave secreta: o client chega como parâmetro. É o que mantém
+// todo o `src/lib/worker/` livre de segredos e importável de qualquer lado.
+import type { SupabaseClient } from '@supabase/supabase-js'
 import { sanitize } from '@/lib/logging/sanitize'
 
 const MAX_MESSAGE = 2000
@@ -226,13 +381,15 @@ export type ExecutionLogEntry = {
  * Falhas são engolidas de propósito: log é telemetria e não pode custar a
  * operação do usuário.
  */
-export async function logExecution(entry: ExecutionLogEntry): Promise<void> {
+export async function logExecution(
+  service: SupabaseClient,
+  entry: ExecutionLogEntry,
+): Promise<void> {
   try {
     const mensagem = entry.errorMessage
       ? String(sanitize(entry.errorMessage)).slice(0, MAX_MESSAGE)
       : null
 
-    const service = createServiceClient()
     await service.from('execution_logs').insert({
       owner_id: entry.ownerId,
       reddit_account_id: entry.redditAccountId ?? null,
@@ -630,12 +787,161 @@ describe('runPost — validação antes de enviar', () => {
 })
 ```
 
+- [ ] **Step 3b: O teste da conexão derrubada depois do envio**
+
+Arquivo próprio: `tests/worker/dropped-connection.test.ts`.
+
+Este é o cenário mais perigoso do sistema — o Reddit recebe o POST, cria a
+publicação e a conexão cai antes da resposta. O worker não tem como saber se
+publicou. **Nunca pode retentar.**
+
+O teste do `MockAgent` acima (`replyWithError` com `ECONNRESET`) cobre a
+classificação, mas não prova o caminho real: ali o erro é fabricado pelo mock,
+sem que byte nenhum tenha trafegado. Aqui subimos um servidor HTTP local de
+verdade, que **lê o corpo inteiro** e só então destrói o socket. É a diferença
+entre "o código trata um erro chamado ECONNRESET" e "o código trata um POST
+que chegou ao outro lado".
+
+Não se provoca isso contra a API real — seria publicar de verdade para testar.
+
+```ts
+// tests/worker/dropped-connection.test.ts
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { createServer, type Server } from 'node:http'
+import { Agent } from 'undici'
+import type { AddressInfo } from 'node:net'
+
+let servidor: Server
+let porta: number
+/** Prova que o upstream realmente recebeu o corpo antes de cair. */
+let corpoRecebido = ''
+let recebeuPost = false
+
+beforeAll(async () => {
+  servidor = createServer((req, res) => {
+    if (req.method !== 'POST') {
+      // Os GETs de requisitos respondem normalmente.
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end('{}')
+      return
+    }
+
+    const partes: Buffer[] = []
+    req.on('data', (c) => partes.push(c as Buffer))
+    req.on('end', () => {
+      // Neste ponto o "Reddit" recebeu o pedido completo. Do lado de lá, a
+      // publicação existiria. Só então a conexão morre.
+      corpoRecebido = Buffer.concat(partes).toString('utf8')
+      recebeuPost = true
+      res.socket?.destroy()
+    })
+  })
+
+  await new Promise<void>((ok) => servidor.listen(0, '127.0.0.1', ok))
+  porta = (servidor.address() as AddressInfo).port
+})
+
+afterAll(async () => {
+  await new Promise<void>((ok) => servidor.close(() => ok()))
+})
+
+/**
+ * Dispatcher que redireciona oauth.reddit.com para o servidor local.
+ *
+ * O `connect` customizado é o que mantém o teste honesto: a URL, os headers e
+ * o corpo continuam sendo exatamente os que iriam para o Reddit. Só o destino
+ * TCP muda.
+ */
+function dispatcherLocal() {
+  return new Agent({
+    connect: (opts, callback) => {
+      const net = require('node:net') as typeof import('node:net')
+      const socket = net.connect(porta, '127.0.0.1')
+      socket.on('connect', () => callback(null, socket))
+      socket.on('error', (e) => callback(e, null))
+    },
+  })
+}
+
+describe('conexão derrubada depois do envio', () => {
+  it('o upstream recebe o POST e o job termina em needs_review', async () => {
+    const job = await criarJob()
+    await rodar(job, { dispatcher: dispatcherLocal() })
+
+    // 1. O pedido chegou de verdade ao outro lado.
+    expect(recebeuPost).toBe(true)
+    expect(corpoRecebido).toContain('kind=')
+
+    // 2. O desfecho é revisão manual, nunca falha nem republicação.
+    const depois = await lerJob(job.id)
+    expect(depois.status).toBe('needs_review')
+    expect(depois.review_reason).toBeTruthy()
+  })
+
+  it('submit_attempted_at permanece gravado', async () => {
+    // É o registro de que algo pode ter saído. Limpá-lo autorizaria uma
+    // segunda publicação.
+    const job = await criarJob()
+    await rodar(job, { dispatcher: dispatcherLocal() })
+
+    expect((await lerJob(job.id)).submit_attempted_at).not.toBeNull()
+  })
+
+  it('NÃO agenda nova tentativa', async () => {
+    const job = await criarJob()
+    await rodar(job, { dispatcher: dispatcherLocal() })
+
+    const depois = await lerJob(job.id)
+    expect(depois.next_attempt_at).toBeNull()
+    expect(depois.retry_count).toBe(0)
+  })
+
+  it('rodar o worker de novo não pega o job para republicar', async () => {
+    // A prova final: mesmo com o loop girando, o job não volta à fila.
+    const job = await criarJob()
+    await rodar(job, { dispatcher: dispatcherLocal() })
+
+    const { data } = await adminClient().rpc('claim_due_posts', {
+      p_worker_id: 'worker-teste',
+      p_batch: 50,
+    })
+    expect((data ?? []).map((r: { id: string }) => r.id)).not.toContain(job.id)
+  })
+
+  it('o reaper também não o devolve à fila', async () => {
+    const job = await criarJob()
+    await rodar(job, { dispatcher: dispatcherLocal() })
+
+    const { data } = await adminClient().rpc('reap_stale_jobs', {
+      p_timeout_seconds: 0,
+    })
+    const devolvidos = (data ?? [])
+      .filter((r: { outcome: string }) => r.outcome === 'requeued')
+      .map((r: { job_id: string }) => r.job_id)
+    expect(devolvidos).not.toContain(job.id)
+  })
+
+  it('o erro classificado não autoriza repetir o efeito', async () => {
+    // Amarra este cenário ao ajuste do safeToRetryEffect.
+    const job = await criarJob()
+    const { erro } = await rodar(job, { dispatcher: dispatcherLocal() })
+    expect(erro?.disposition).toBe('unknown')
+    expect(erro?.safeToRetryEffect).toBe(false)
+  })
+})
+```
+
+Reaproveite `criarJob`, `lerJob` e `rodar` do arquivo de testes do runner
+extraindo-os para `tests/worker/post-job-helpers.ts` — duplicá-los faria os
+dois arquivos divergirem com o tempo. `rodar` ganha um parâmetro opcional
+`{ dispatcher }` repassado ao client, e passa a devolver o erro capturado.
+
 - [ ] **Step 4: Implementar o runner**
 
 ```ts
 // worker/post-runner.ts
 import type { Dispatcher } from 'undici'
-import { createServiceClient } from '@/lib/supabase/service-client'
+import { workerServiceClient } from './supabase'
 import { getRedditClient } from '@/lib/reddit/reddit-client-factory'
 import { getPostRequirements } from '@/lib/reddit/requirements'
 import { buildPayload, PayloadError } from '@/lib/scheduling/payload-builder'
@@ -671,14 +977,14 @@ export async function runPost(
   job: PostJob,
   opts: { dispatcher?: Dispatcher } = {},
 ): Promise<PostOutcome> {
-  const service = createServiceClient()
+  const service = workerServiceClient()
   const inicio = Date.now()
 
   const log = (
     outcome: 'success' | 'failure' | 'retry' | 'unknown',
     extra: { errorCode?: string; errorMessage?: string; httpStatus?: number } = {},
   ) =>
-    logExecution({
+    logExecution(service, {
       ownerId: job.owner_id,
       redditAccountId: job.reddit_account_id,
       scheduledPostId: job.id,
@@ -805,8 +1111,15 @@ export async function runPost(
       return 'needs_review'
     }
 
-    // --- retentável ---
-    if (e instanceof RedditError && e.disposition === 'retryable') {
+    // --- retentável E seguro repetir ---
+    // As duas condições são necessárias: `retryable` diz que vale a pena
+    // tentar; `safeToRetryEffect` diz que repetir não arrisca publicar duas
+    // vezes. Só com as duas o job volta à fila com submit_attempted_at limpo.
+    if (
+      e instanceof RedditError &&
+      e.disposition === 'retryable' &&
+      e.safeToRetryEffect
+    ) {
       const tentativas = job.retry_count + 1
       if (tentativas > MAX_RETRIES) {
         await finalizar({
@@ -864,11 +1177,15 @@ export async function runPost(
 }
 ```
 
-**Atenção ao limpar `submit_attempted_at` no caminho retentável.** Isso só é
-correto porque um erro `retryable` significa, por definição da tabela de
-disposições do Plano 2, que o Reddit comprovadamente **não** processou o
-pedido — 429 é recusa explícita, e falhas de rede pré-envio não chegaram a
-sair. Se essa classificação mudar, esta linha precisa mudar junto.
+**Sobre limpar `submit_attempted_at`.** A guarda é `safeToRetryEffect`, não
+`disposition`. Um erro que seja `retryable` mas sem afirmação explícita de
+segurança cai no ramo terminal — conservador de propósito: falhar um job é
+recuperável pelo histórico, republicar não é.
+
+**Caso residual que o ramo terminal precisa cobrir:** um erro `retryable` com
+`safeToRetryEffect: false` não deve ser tratado como falha comum. O runner o
+envia para `needs_review`, porque a combinação significa "vale a pena tentar,
+mas não sabemos se já teve efeito" — exatamente a definição de ambíguo.
 
 - [ ] **Step 5: Rodar, verificar e commitar**
 
@@ -925,7 +1242,7 @@ trocando `scheduled_posts` por `scheduled_comments`, `submitPath` por
 ```ts
 // worker/comment-runner.ts
 import type { Dispatcher } from 'undici'
-import { createServiceClient } from '@/lib/supabase/service-client'
+import { workerServiceClient } from './supabase'
 import { getRedditClient } from '@/lib/reddit/reddit-client-factory'
 import { submitComment } from '@/lib/reddit/comments'
 import { RedditError } from '@/lib/reddit/errors'
@@ -948,14 +1265,14 @@ export async function runComment(
   job: CommentJob,
   opts: { dispatcher?: Dispatcher } = {},
 ): Promise<CommentOutcome> {
-  const service = createServiceClient()
+  const service = workerServiceClient()
   const inicio = Date.now()
 
   const log = (
     outcome: 'success' | 'failure' | 'retry' | 'unknown',
     extra: { errorCode?: string; errorMessage?: string } = {},
   ) =>
-    logExecution({
+    logExecution(service, {
       ownerId: job.owner_id,
       redditAccountId: job.reddit_account_id,
       scheduledPostId: job.scheduled_post_id,
@@ -1130,11 +1447,27 @@ git commit -m "feat: runner de comentario programado"
 **Um ciclo faz, nesta ordem:**
 
 1. reaper — devolve à fila o que o worker anterior deixou preso;
-2. orçamento — se pausado, espera até o reset (o worker **pode** dormir, ao
-   contrário da Vercel);
+2. **orçamento, ANTES do claim** — se pausado, o ciclo termina sem reivindicar
+   nada e o worker dorme até o próximo ciclo;
 3. claim de publicações → processa **sequencialmente**;
 4. claim de comentários → processa sequencialmente;
 5. limpeza de logs vencidos, uma vez por hora.
+
+**A ordem entre 2 e 3 é a regra, não uma otimização.** Um worker jamais pode
+dormir esperando orçamento com um job em `processing`: passado o timeout, o
+reaper de outra instância o recuperaria, e dois workers passariam a processar
+o mesmo job. Verificar o orçamento antes do claim elimina a situação em vez de
+administrá-la.
+
+**Orçamento que esgota no meio do lote.** Aí o job já está reivindicado. O
+worker interrompe o lote e **devolve à fila** os jobs ainda não processados —
+seguro, porque nenhum deles chegou a ter `submit_attempted_at` gravado.
+
+**Heartbeat, para o caso irredutível.** Um único job pode demorar mais que o
+timeout do reaper — refresh de token lento, proxy ruim, resposta demorada. Para
+isso existe `renew_job_lock`, chamada periodicamente enquanto o job está em
+execução. Sem ela, o reaper recuperaria um job que ainda está vivo, e o mesmo
+conteúdo poderia ser publicado duas vezes.
 
 **Sequencial de propósito.** Paralelizar publicações da mesma conta furaria o
 espaçamento, e paralelizar contas diferentes multiplicaria o consumo de
@@ -1209,6 +1542,88 @@ describe('getWorkerConfig', () => {
 //   - o relatório traz contagens por desfecho
 ```
 
+E, especificamente para o ajuste do lock, no mesmo arquivo:
+
+```ts
+describe('o ciclo não segura jobs enquanto espera', () => {
+  it('orçamento pausado: NENHUM job sai de scheduled', async () => {
+    // A prova de que a checagem vem antes do claim. Se viesse depois, os jobs
+    // ficariam em processing durante toda a pausa.
+    const a = await criarJob()
+    const b = await criarJob()
+    await pausarOrcamento()
+
+    const r = await runCycle()
+
+    expect(r.pausedForBudget).toBe(true)
+    for (const job of [a, b]) {
+      const depois = await lerJob(job.id)
+      expect(depois.status).toBe('scheduled')
+      expect(depois.locked_by).toBeNull()
+    }
+  })
+
+  it('orçamento esgota no meio do lote: o restante volta para a fila', async () => {
+    // O primeiro job consome o que sobrava; os outros dois não podem ficar
+    // presos em processing até o próximo ciclo.
+    const jobs = [await criarJob(), await criarJob(), await criarJob()]
+    await deixarOrcamentoPara(1)
+
+    await runCycle()
+
+    const restantes = await Promise.all(jobs.slice(1).map((j) => lerJob(j.id)))
+    for (const job of restantes) {
+      expect(job.status).toBe('scheduled')
+      expect(job.locked_by).toBeNull()
+      // Devolver só é seguro porque nenhum chegou a tentar enviar.
+      expect(job.submit_attempted_at).toBeNull()
+    }
+  })
+
+  it('job demorado mantém o lock: outro worker não o recupera', async () => {
+    // O teste central do ajuste, agora no nível do ciclo e não do SQL.
+    // O upstream demora mais que o timeout do reaper para responder.
+    process.env.WORKER_REAPER_TIMEOUT_SECONDS = '1'
+    const job = await criarJob()
+
+    const ciclo = runCycle({ dispatcher: dispatcherLento(3000) })
+
+    // Enquanto o ciclo roda, um segundo worker tenta reivindicar e o reaper
+    // tenta recuperar. Nenhum dos dois pode conseguir.
+    await new Promise((r) => setTimeout(r, 2000))
+
+    const { data: colhidos } = await adminClient().rpc('reap_stale_jobs', {
+      p_timeout_seconds: 1,
+    })
+    expect((colhidos ?? []).map((r: { job_id: string }) => r.job_id))
+      .not.toContain(job.id)
+
+    const { data: roubo } = await adminClient().rpc('claim_due_posts', {
+      p_worker_id: 'worker-intruso',
+      p_batch: 10,
+    })
+    expect((roubo ?? []).map((r: { id: string }) => r.id)).not.toContain(job.id)
+
+    await ciclo
+
+    // E o job terminou normalmente, uma vez só.
+    const depois = await lerJob(job.id)
+    expect(depois.status).toBe('published')
+    const { data: logs } = await adminClient()
+      .from('execution_logs')
+      .select('id')
+      .eq('scheduled_post_id', job.id)
+      .eq('action', 'submit_post')
+      .eq('outcome', 'success')
+    expect(logs).toHaveLength(1)
+  })
+})
+```
+
+`dispatcherLento(ms)` é um `MockAgent` cujo intercept usa `.delay(ms)`. O teste
+leva alguns segundos de propósito — é o único jeito de exercitar o heartbeat
+com o relógio real do `setInterval`.
+
 - [ ] **Step 2: Implementar a configuração**
 
 ```ts
@@ -1272,7 +1687,7 @@ export function getWorkerConfig(): WorkerConfig {
 // worker/index.ts
 import { existsSync } from 'node:fs'
 import type { Dispatcher } from 'undici'
-import { createServiceClient } from '@/lib/supabase/service-client'
+import { workerServiceClient } from './supabase'
 import { getWorkerConfig } from '@/lib/worker/config'
 import { getBudget } from '@/lib/reddit/budget'
 import { sanitize } from '@/lib/logging/sanitize'
@@ -1300,7 +1715,7 @@ export async function runCycle(
   opts: { dispatcher?: Dispatcher } = {},
 ): Promise<CycleReport> {
   const config = getWorkerConfig()
-  const service = createServiceClient()
+  const service = workerServiceClient()
 
   const relatorio: CycleReport = {
     reaped: 0,
@@ -1315,9 +1730,13 @@ export async function runCycle(
   })
   relatorio.reaped = (reaped ?? []).length
 
-  // --- 2: orçamento ---
-  // Diferente da Vercel, aqui podemos esperar: o worker não está segurando
-  // uma requisição HTTP de ninguém.
+  // --- 2: orçamento ANTES do claim ---
+  //
+  // A ordem importa e não é preferência de estilo. Se o claim viesse primeiro,
+  // o worker esperaria o reset do orçamento segurando jobs em `processing`.
+  // Passado o timeout, o reaper de outra instância os devolveria à fila e dois
+  // workers processariam o mesmo job. Verificando antes, a situação não chega
+  // a existir: sem orçamento, o ciclo termina sem ter reivindicado nada.
   const budget = await getBudget()
   if (budget?.pausedUntil && budget.pausedUntil.getTime() > Date.now()) {
     relatorio.pausedForBudget = true
@@ -1330,17 +1749,36 @@ export async function runCycle(
     p_batch: config.batchSize,
   })
 
-  for (const job of (posts ?? []) as PostJob[]) {
+  const restantes = [...((posts ?? []) as PostJob[])]
+  while (restantes.length > 0) {
     if (parando) break
+    const job = restantes.shift()!
+
+    // O heartbeat mantém o lock vivo enquanto o job roda. Necessário porque um
+    // único job pode passar do timeout do reaper — refresh lento, proxy ruim,
+    // upstream demorado — e sem ele o reaper mataria um job vivo.
+    const heartbeat = iniciarHeartbeat(service, 'post', job.id, config)
     try {
       const desfecho = await runPost(job, opts)
       relatorio.posts[desfecho] = (relatorio.posts[desfecho] ?? 0) + 1
+
+      // Orçamento esgotado no meio do lote: interrompe e DEVOLVE o que sobrou.
+      // Segurar jobs reivindicados até o próximo ciclo é o que queremos evitar.
+      if (desfecho === 'budget') {
+        relatorio.pausedForBudget = true
+        await devolverAFila(service, 'post', restantes.map((j) => j.id))
+        break
+      }
     } catch (e) {
       // Um job problemático não pode derrubar o ciclo inteiro.
       console.error('worker: falha inesperada em publicação', sanitize(e))
       relatorio.posts.error = (relatorio.posts.error ?? 0) + 1
+    } finally {
+      heartbeat.parar()
     }
   }
+
+  if (relatorio.pausedForBudget) return relatorio
 
   // --- 4: comentários ---
   const { data: comments } = await service.rpc('claim_due_comments', {
@@ -1348,24 +1786,91 @@ export async function runCycle(
     p_batch: config.batchSize,
   })
 
-  for (const job of (comments ?? []) as CommentJob[]) {
+  const comRestantes = [...((comments ?? []) as CommentJob[])]
+  while (comRestantes.length > 0) {
     if (parando) break
+    const job = comRestantes.shift()!
+    const heartbeat = iniciarHeartbeat(service, 'comment', job.id, config)
     try {
       const desfecho = await runComment(job, opts)
       relatorio.comments[desfecho] = (relatorio.comments[desfecho] ?? 0) + 1
+      if (desfecho === 'budget') {
+        relatorio.pausedForBudget = true
+        await devolverAFila(service, 'comment', comRestantes.map((j) => j.id))
+        break
+      }
     } catch (e) {
       console.error('worker: falha inesperada em comentário', sanitize(e))
       relatorio.comments.error = (relatorio.comments.error ?? 0) + 1
+    } finally {
+      heartbeat.parar()
     }
   }
 
   return relatorio
 }
 
+/**
+ * Renova o lock periodicamente enquanto o job roda.
+ *
+ * O intervalo é uma fração do timeout do reaper para tolerar uma renovação
+ * perdida. Se a renovação retornar falso, perdemos o lock: registramos e
+ * paramos de renovar — o runner em andamento vai terminar e gravar seu
+ * resultado, que é preferível a abortar no meio de uma submissão.
+ */
+function iniciarHeartbeat(
+  service: SupabaseClient,
+  kind: 'post' | 'comment',
+  jobId: string,
+  config: WorkerConfig,
+) {
+  const intervalo = Math.max(5_000, (config.reaperTimeoutSeconds * 1000) / 3)
+  const timer = setInterval(async () => {
+    try {
+      const { data } = await service.rpc('renew_job_lock', {
+        p_kind: kind,
+        p_job_id: jobId,
+        p_worker_id: config.workerId,
+      })
+      if (data === false) {
+        console.error(`worker: lock perdido em ${kind} ${jobId}`)
+        clearInterval(timer)
+      }
+    } catch (e) {
+      console.error('worker: heartbeat falhou', sanitize(e))
+    }
+  }, intervalo)
+  // Não segura o processo aberto no desligamento.
+  timer.unref?.()
+  return { parar: () => clearInterval(timer) }
+}
+
+/**
+ * Devolve à fila jobs reivindicados que não chegamos a processar.
+ *
+ * Seguro por construção: nenhum deles teve `submit_attempted_at` gravado — o
+ * runner nem chegou a rodar. Ainda assim a condição está no `update`, para o
+ * caso de a lista vir errada no futuro.
+ */
+async function devolverAFila(
+  service: SupabaseClient,
+  kind: 'post' | 'comment',
+  ids: string[],
+) {
+  if (ids.length === 0) return
+  const tabela = kind === 'post' ? 'scheduled_posts' : 'scheduled_comments'
+  await service
+    .from(tabela)
+    .update({ status: 'scheduled', locked_at: null, locked_by: null })
+    .in('id', ids)
+    .eq('status', 'processing')
+    .is('submit_attempted_at', null)
+}
+
 async function limparLogsAntigos() {
   const { logRetentionDays } = getWorkerConfig()
   const corte = new Date(Date.now() - logRetentionDays * 86_400_000)
-  const service = createServiceClient()
+  const service = workerServiceClient()
   await service.from('execution_logs').delete().lt('created_at', corte.toISOString())
 }
 

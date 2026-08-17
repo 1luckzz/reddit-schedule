@@ -896,7 +896,15 @@ git commit -m "feat: dashboard, status do worker e paginas de logs"
 - [ ] Comentário só é publicado com post pai `published` e `reddit_fullname`
 - [ ] Comentário com horário absoluto vencido fica elegível logo após a publicação
 - [ ] Logs não contêm token, senha de proxy, header de autorização nem URL com credenciais
-- [ ] `authenticated` e `anon` sem EXECUTE nas funções de claim, reaper e resolução
+- [ ] `authenticated` e `anon` sem EXECUTE nas funções de claim, reaper, heartbeat e resolução
+- [ ] Só `safeToRetryEffect === true` limpa `submit_attempted_at`; erro `unknown` nunca limpa
+- [ ] Conexão derrubada após o POST (servidor local determinístico) termina em `needs_review` sem retry
+- [ ] Orçamento é verificado antes do claim: pausa não deixa job nenhum em `processing`
+- [ ] Orçamento esgotado no meio do lote devolve à fila os jobs não processados
+- [ ] Heartbeat impede que espera maior que o timeout do reaper libere o job para outro worker
+- [ ] `renew_job_lock` recusa renovação de worker que não é o dono do lock
+- [ ] A chave secreta é lida só em `config/env.ts`, `supabase/admin.ts` e `worker/supabase.ts`
+- [ ] Nenhum arquivo `'use client'` alcança `admin.ts`, a factory ou `config/env.ts` pelo grafo de imports
 - [ ] Worker encerra graciosamente com SIGTERM
 - [ ] Imagem Docker constrói e roda como usuário não-root
 

@@ -26,7 +26,10 @@ As dos Planos 1 a 4 continuam valendo. Estas se somam:
 - **Nenhuma chamada real ao Reddit enquanto a Data API não for aprovada.** `undici.MockAgent` em todo teste; a suíte passa sem `REDDIT_CLIENT_ID`.
 - **`submit_attempted_at` é gravado e commitado ANTES de escrever a requisição de efeito.** É o que separa "nunca saiu" de "pode ter chegado".
 - **Resultado desconhecido nunca é retentado.** Vai para `needs_review` e espera decisão humana.
+- **`safeToRetryEffect` decide a limpeza de `submit_attempted_at`, nunca `disposition`.** São perguntas diferentes: `retryable` responde "vale a pena tentar de novo?", `safeToRetryEffect` responde "repetir a operação de efeito é seguro?". Só a segunda autoriza devolver o job à fila com o campo limpo. Um erro `unknown` tem `safeToRetryEffect: false` por definição, sem exceção.
+- **O worker nunca dorme segurando um job.** Espera de orçamento acontece antes do claim; um job já reivindicado mantém o lock vivo por heartbeat.
 - **O reaper não transforma estado ambíguo em nova submissão.** Só devolve à fila o que tem `submit_attempted_at` nulo.
+- **A chave secreta é lida em exatamente três lugares.** `config/env.ts` (validação de subida), `supabase/admin.ts` (`server-only`, caminho do Next) e `worker/supabase.ts` (fora da árvore do Next). O módulo compartilhado é uma factory **pura** que recebe URL e chave por parâmetro. Nenhum módulo alcançável a partir de um arquivo `'use client'` lê ou contém a chave — há teste que percorre o grafo de imports.
 - **Toda reserva de orçamento é devolvida**, inclusive em falha — invariante do Plano 3.
 - **Logs passam por `sanitize()`** antes de qualquer escrita ou `console`.
 - **As páginas do bloco B são somente leitura.** Nenhuma delas chama a API do Reddit nem muta estado, exceto as ações já existentes de reagendar/cancelar e a resolução manual da Revisão.
@@ -45,7 +48,7 @@ As dos Planos 1 a 4 continuam valendo. Estas se somam:
 - Test: `tests/db/claim-functions.test.ts`
 
 **Interfaces:**
-- Produces: tabela `public.execution_logs`; funções `claim_due_posts`, `claim_due_comments`, `reap_stale_jobs`, `materialize_comment_schedule`
+- Produces: tabela `public.execution_logs`; funções `claim_due_posts`, `claim_due_comments`, `reap_stale_jobs`, `renew_job_lock`, `materialize_comment_schedule`
 
 **A decisão central:** o claim é uma função SQL, não uma sequência de consultas da aplicação. `FOR UPDATE SKIP LOCKED` dentro de uma transação garante que duas instâncias do worker nunca processam o mesmo job **ao mesmo tempo** — que é a garantia real, e não exactly-once.
 
@@ -399,7 +402,8 @@ describe('claim_due_posts', () => {
          join pg_namespace n on n.oid = p.pronamespace
          cross join lateral (values ('anon'), ('authenticated')) as r(rolname)
          where n.nspname = 'public'
-           and p.proname in ('claim_due_posts', 'claim_due_comments', 'reap_stale_jobs')
+           and p.proname in ('claim_due_posts', 'claim_due_comments',
+                             'reap_stale_jobs', 'renew_job_lock')
            and has_function_privilege(r.rolname, p.oid, 'EXECUTE')`,
       ),
     )
@@ -595,11 +599,62 @@ begin
 end;
 $$;
 
+-- ---------------------------------------------------------------
+-- Renovação de lock (heartbeat)
+-- ---------------------------------------------------------------
+-- O worker às vezes precisa esperar mais que o timeout do reaper para
+-- terminar um único job — refresh de token lento, proxy ruim, resposta
+-- demorada. Sem heartbeat, o reaper recuperaria um job que ainda está vivo e
+-- outro worker publicaria o mesmo conteúdo.
+--
+-- Duas defesas essenciais:
+--   1. `locked_by = p_worker_id` — só o dono renova. Um worker não pode
+--      prolongar o lock de outro.
+--   2. Retorno booleano — falso significa "você perdeu o lock". O chamador
+--      DEVE abortar; continuar seria processar um job que outra instância já
+--      pode ter reivindicado.
+create or replace function public.renew_job_lock(
+  p_kind text,
+  p_job_id uuid,
+  p_worker_id text
+)
+returns boolean
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_ok boolean := false;
+begin
+  if p_kind = 'post' then
+    update public.scheduled_posts
+    set locked_at = now()
+    where id = p_job_id
+      and status = 'processing'
+      and locked_by = p_worker_id;
+    v_ok := found;
+  elsif p_kind = 'comment' then
+    update public.scheduled_comments
+    set locked_at = now()
+    where id = p_job_id
+      and status = 'processing'
+      and locked_by = p_worker_id;
+    v_ok := found;
+  else
+    raise exception 'kind invalido: %', p_kind;
+  end if;
+
+  return v_ok;
+end;
+$$;
+
 revoke execute on function public.claim_due_posts(text, integer)
   from public, anon, authenticated;
 revoke execute on function public.claim_due_comments(text, integer)
   from public, anon, authenticated;
 revoke execute on function public.reap_stale_jobs(integer)
+  from public, anon, authenticated;
+revoke execute on function public.renew_job_lock(text, uuid, text)
   from public, anon, authenticated;
 revoke execute on function
   public.materialize_comment_schedule(uuid, timestamptz)
@@ -608,9 +663,16 @@ revoke execute on function
 grant execute on function public.claim_due_posts(text, integer) to service_role;
 grant execute on function public.claim_due_comments(text, integer) to service_role;
 grant execute on function public.reap_stale_jobs(integer) to service_role;
+grant execute on function public.renew_job_lock(text, uuid, text) to service_role;
 grant execute on function
   public.materialize_comment_schedule(uuid, timestamptz) to service_role;
 ```
+
+**Nota sobre o trigger `protect_post_execution_columns`.** Ele existe desde o
+Plano 4 e bloqueia mutação das colunas de execução fora do backend. `locked_at`
+está entre elas, e `renew_job_lock` é `security definer` rodando como owner —
+o mesmo caminho já usado por `claim_due_posts`. A Step 6 valida isso na
+prática.
 
 - [ ] **Step 6: Aplicar, rodar, verificar**
 
@@ -823,7 +885,130 @@ describe('reaper', () => {
     expect(segundo.data!.status).toBe(primeiro.data!.status)
   })
 })
+
+// ---------------------------------------------------------------
+// Heartbeat: um job vivo não pode ser roubado por espera longa
+// ---------------------------------------------------------------
+describe('renew_job_lock', () => {
+  const TIMEOUT = 60
+
+  it('espera maior que o timeout do reaper NÃO libera o job, com heartbeat', async () => {
+    // Cenário: worker-A reivindica e precisa esperar 150s — 2,5x o timeout.
+    // Sem heartbeat o reaper devolveria o job à fila e worker-B publicaria o
+    // mesmo conteúdo. Simulamos empurrando locked_at para o passado e
+    // renovando, em vez de dormir de verdade.
+    const id = await jobPreso({ locked_by: 'worker-A', submit_attempted_at: null })
+
+    for (const decorridos of [70, 140, 210]) {
+      // Envelhece o lock além do timeout...
+      await adminClient()
+        .from('scheduled_posts')
+        .update({
+          locked_at: new Date(Date.now() - decorridos * 1000).toISOString(),
+        })
+        .eq('id', id)
+
+      // ...e o heartbeat chega antes do reaper.
+      const { data: renovou } = await adminClient().rpc('renew_job_lock', {
+        p_kind: 'post',
+        p_job_id: id,
+        p_worker_id: 'worker-A',
+      })
+      expect(renovou).toBe(true)
+
+      // O reaper roda e não deve encontrar nada.
+      const { data: colhidos } = await reap(TIMEOUT)
+      expect(
+        (colhidos ?? []).map((r: { job_id: string }) => r.job_id),
+      ).not.toContain(id)
+
+      // E o claim de outro worker não pode pegar este job.
+      const { data: roubo } = await adminClient().rpc('claim_due_posts', {
+        p_worker_id: 'worker-B',
+        p_batch: 10,
+      })
+      expect((roubo ?? []).map((r: { id: string }) => r.id)).not.toContain(id)
+    }
+
+    const { data } = await adminClient()
+      .from('scheduled_posts')
+      .select('status, locked_by')
+      .eq('id', id)
+      .single()
+    expect(data!.status).toBe('processing')
+    expect(data!.locked_by).toBe('worker-A')
+  })
+
+  it('CONTRAPROVA: sem heartbeat, a mesma espera perde o job', async () => {
+    // Este teste existe para provar que o anterior não passa por acidente.
+    // Se o reaper não recuperasse jobs vencidos, o primeiro teste seria vazio.
+    const id = await jobPreso({ locked_by: 'worker-A', submit_attempted_at: null })
+    await adminClient()
+      .from('scheduled_posts')
+      .update({ locked_at: new Date(Date.now() - 70_000).toISOString() })
+      .eq('id', id)
+
+    await reap(TIMEOUT)
+
+    const { data } = await adminClient()
+      .from('scheduled_posts')
+      .select('status')
+      .eq('id', id)
+      .single()
+    expect(data!.status).toBe('scheduled')
+  })
+
+  it('um worker não renova o lock de outro', async () => {
+    const id = await jobPreso({ locked_by: 'worker-A' })
+    const { data } = await adminClient().rpc('renew_job_lock', {
+      p_kind: 'post',
+      p_job_id: id,
+      p_worker_id: 'worker-B',
+    })
+    expect(data).toBe(false)
+  })
+
+  it('renovar um job que já saiu de processing retorna falso', async () => {
+    // É assim que o worker descobre que perdeu a corrida e deve abortar.
+    const id = await jobPreso({ status: 'scheduled', locked_by: null, locked_at: null })
+    const { data } = await adminClient().rpc('renew_job_lock', {
+      p_kind: 'post',
+      p_job_id: id,
+      p_worker_id: 'worker-A',
+    })
+    expect(data).toBe(false)
+  })
+
+  it('renova comentário também', async () => {
+    const post = await jobPreso({ status: 'published' })
+    const { data: com } = await adminClient()
+      .from('scheduled_comments')
+      .insert({
+        owner_id: OWNER,
+        scheduled_post_id: post,
+        reddit_account_id: CONTA,
+        body: 'comentário',
+        mode: 'absolute',
+        status: 'processing',
+        locked_by: 'worker-A',
+        locked_at: new Date().toISOString(),
+        scheduled_at: new Date().toISOString(),
+      })
+      .select('id')
+      .single()
+
+    const { data } = await adminClient().rpc('renew_job_lock', {
+      p_kind: 'comment',
+      p_job_id: com!.id,
+      p_worker_id: 'worker-A',
+    })
+    expect(data).toBe(true)
+  })
+})
 ```
+
+O primeiro teste é o que o ajuste pediu, e o segundo é o que lhe dá valor:
+sem a contraprova, um reaper quebrado faria o primeiro passar sem nada provar.
 
 - [ ] **Step 2: Rodar, verificar e commitar**
 
@@ -834,7 +1019,7 @@ npm run verify
 
 ```bash
 git add -A
-git commit -m "test: reaper trata a janela de incerteza"
+git commit -m "test: reaper trata a janela de incerteza e respeita heartbeat"
 ```
 
 ---
