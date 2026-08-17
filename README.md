@@ -195,30 +195,81 @@ existe justamente para detectar isso — se quebrar, o protocolo sai da lista em
 
 ## Verificação pendente
 
-Uma etapa do Plano 2 **não pôde ser executada** e continua em aberto:
+Nada aqui foi executado contra a API real do Reddit. **Toda** a integração é
+coberta por testes automatizados com `undici.MockAgent`, que rodam sem
+credenciais — mas mock não é prova de que o formato da resposta real bate.
+Estes são os pontos onde a API pode divergir, e só um teste real resolve.
 
-- [ ] **Sincronização de comunidades contra a API real.** Depende das mesmas
-      credenciais do item abaixo. Roteiro: conectar uma conta, abrir
-      **Comunidades**, clicar em **Sincronizar**, e conferir que as comunidades
-      moderadas aparecem com o tipo de submissão correto. Confirmar também o
-      formato real de `link_flair_v2` e de `post_requirements` — são os únicos
-      pontos onde a API pode divergir dos mocks.
+Requisito comum a todos: `REDDIT_CLIENT_ID` e `REDDIT_CLIENT_SECRET`
+preenchidos no `.env.local` (ver Fase -1), o que depende da aprovação da
+Reddit Data API.
 
-- [ ] **Fluxo OAuth de ponta a ponta com o Reddit real.** Requer
-      `REDDIT_CLIENT_ID` e `REDDIT_CLIENT_SECRET` preenchidos no `.env.local`
-      (ver Fase -1). Roteiro:
-      1. `npm run dev`, entrar no painel e acessar **Conectar conta**;
-      2. autorizar no Reddit e confirmar o retorno a `/dashboard/accounts`
-         sem erro na query string;
-      3. conferir que a conta aparece com status **Conectada**;
-      4. recarregar a URL de callback (F5) e confirmar a mensagem de
-         solicitação expirada — o `state` é de uso único;
-      5. conferir no banco que os tokens estão cifrados:
-         `select left(access_token_enc, 3) from public.reddit_account_secrets;`
-         deve devolver `v1.`, nunca um token legível.
+### 1. OAuth de ponta a ponta
 
-Todo o resto do Plano 2 está coberto por testes automatizados, que rodam sem
-credenciais reais: a API do Reddit é simulada com `undici.MockAgent`.
+Endpoints: `/api/v1/authorize`, `/api/v1/access_token`, `/api/v1/me`.
+
+- [ ] **Conectar uma conta.** `npm run dev`, entrar no painel, acessar
+      **Conectar conta**, autorizar no Reddit e confirmar o retorno a
+      `/dashboard/accounts` sem erro na query string.
+- [ ] **Conta aparece como Conectada** na lista.
+- [ ] **`state` é de uso único:** recarregar a URL de callback (F5) e conferir
+      a mensagem de solicitação expirada.
+- [ ] **Tokens ficam cifrados no banco:**
+      `select left(access_token_enc, 3) from public.reddit_account_secrets;`
+      deve devolver `v1.`, nunca um token legível.
+- [ ] **Renovação de token.** O access token do Reddit expira em cerca de uma
+      hora. Deixar uma conta parada além disso e então publicar, confirmando
+      que a renovação acontece sozinha e que `refresh_lock_at` volta a nulo.
+
+### 2. Leitura de comunidades e regras
+
+- [ ] **Sincronizar comunidades** (`/subreddits/mine/moderator`): abrir
+      **Comunidades**, clicar em **Sincronizar** e conferir que as comunidades
+      moderadas aparecem com o tipo de submissão correto.
+- [ ] **Flairs** (`/r/{sub}/api/link_flair_v2`): confirmar o formato real da
+      resposta e que a lista aparece no formulário de nova publicação.
+- [ ] **Requisitos** (`/api/v1/{sub}/post_requirements`): confirmar o formato
+      real e que uma comunidade que exige flair de fato bloqueia o
+      agendamento sem flair.
+
+### 3. Publicação pelo worker
+
+Este é o bloco mais consequente: é o único que **escreve** no Reddit.
+
+- [ ] **Publicar um link** (`/api/submit`) em uma comunidade de teste própria,
+      com o worker rodando, e conferir `reddit_post_id`, `reddit_fullname` e
+      permalink no Histórico.
+- [ ] **Publicar um self post** e conferir o mesmo.
+- [ ] **Comentário automático** (`/api/comment`): agendar publicação com
+      comentário e confirmar que ele sai depois, no `reddit_fullname` correto.
+- [ ] **Espaçamento entre publicações da mesma conta** é respeitado.
+- [ ] **Publicação recusada pelo Reddit** (por exemplo, título fora das regras
+      da comunidade) vira `failed` com a mensagem real, sem retentar.
+- [ ] **Confirmar que nada é publicado em duplicidade** ao longo do teste.
+
+> Use uma comunidade de teste sua. Um erro aqui publica de verdade.
+
+### 4. Reconciliação da Revisão
+
+- [ ] **Buscar candidatos** (`/user/{username}/submitted`): forçar um item em
+      `needs_review` — o modo mais simples é derrubar o worker logo após um
+      envio — e usar **Verificar no Reddit** na página de Revisão.
+- [ ] **Confirmar o formato real do listing** e que a publicação correta
+      aparece como candidata.
+- [ ] **Resolver como publicada** e conferir que `resolved_by`, `resolved_at`
+      e o permalink ficam gravados, e que o comentário pendente é
+      materializado.
+
+### 5. Operação
+
+- [ ] **Worker em contêiner contra o Supabase de produção**, publicando no
+      horário marcado sem intervenção.
+- [ ] **Desligamento gracioso** com `docker compose stop`: o job em andamento
+      termina antes de o processo sair.
+- [ ] **Proxy por conta contra um proxy real de saída.** Os três protocolos já
+      foram validados contra proxies locais, inclusive a ausência de fallback
+      silencioso; falta confirmar com um provedor real. `socks5` segue como
+      suporte experimental.
 
 ## Estado atual
 
