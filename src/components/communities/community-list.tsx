@@ -15,27 +15,26 @@ const TIPO_LABEL: Record<string, string> = {
   self: 'somente texto',
 }
 
-const chip =
-  'rounded-sm border border-risco bg-console-2 px-1.5 py-0.5 font-display uppercase tracking-[0.06em] text-fosforo-dim'
+const chip = 'rounded-md border border-traco bg-white/5 px-1.5 py-0.5 text-fraco'
 
 export function CommunityList({ communities }: { communities: CommunityRow[] }) {
   if (communities.length === 0) {
     return (
-      <p className="mt-3 text-sm text-fosforo-dim">
+      <p className="mt-3 text-sm text-medio">
         Nenhuma comunidade sincronizada para esta conta ainda.
       </p>
     )
   }
 
   return (
-    <ul className="mt-3 divide-y divide-risco/60">
+    <ul className="mt-3 divide-y divide-white/5">
       {communities.map((c) => (
-        <li key={c.id} className="flex flex-wrap items-center gap-3 py-2.5">
+        <li key={c.id} className="flex flex-wrap items-center gap-3 py-3">
           <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-medium text-fosforo">
+            <p className="truncate text-sm font-medium text-claro">
               r/{c.name}
             </p>
-            <p className="truncate text-xs text-fosforo-dim">{c.display_name}</p>
+            <p className="truncate text-xs text-medio">{c.display_name}</p>
           </div>
 
           <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
@@ -46,7 +45,7 @@ export function CommunityList({ communities }: { communities: CommunityRow[] }) 
             )}
             {c.link_flair_enabled && <span className={chip}>flair</span>}
             {c.over_18 && (
-              <span className="rounded-sm border border-ambar/35 bg-ambar/10 px-1.5 py-0.5 font-display uppercase tracking-[0.06em] text-ambar">
+              <span className="rounded-md border border-areia/30 bg-areia/10 px-1.5 py-0.5 text-areia">
                 +18
               </span>
             )}

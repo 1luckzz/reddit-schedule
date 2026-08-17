@@ -1,9 +1,10 @@
 import Link from 'next/link'
 import { createServerSupabase } from '@/lib/supabase/server'
 import { StatusChip } from '@/components/ui/status-chip'
-import { StudioClock } from '@/components/ui/studio-clock'
 import {
+  botaoPrimario,
   descricaoPagina,
+  estadoVazio,
   modulo,
   plaqueta,
   tituloPagina,
@@ -43,20 +44,17 @@ export default async function DashboardPage() {
       .select('id', { count: 'exact', head: true })
   }
 
-  const [hoje, publicados, pendentes, falhas, emRevisao, noAr] =
-    await Promise.all([
-      contar((q) =>
-        q
-          .gte('scheduled_at', inicioHoje.toISOString())
-          .lt('scheduled_at', fimHoje.toISOString()),
-      ),
-      contar((q) => q.eq('status', 'published')),
-      contar((q) => q.in('status', ['draft', 'scheduled', 'processing'])),
-      contar((q) => q.eq('status', 'failed')),
-      contar((q) => q.eq('status', 'needs_review')),
-      // A lâmpada da linha de transmissão: algo sendo publicado NESTE momento.
-      contar((q) => q.eq('status', 'processing')),
-    ])
+  const [hoje, publicados, pendentes, falhas, emRevisao] = await Promise.all([
+    contar((q) =>
+      q
+        .gte('scheduled_at', inicioHoje.toISOString())
+        .lt('scheduled_at', fimHoje.toISOString()),
+    ),
+    contar((q) => q.eq('status', 'published')),
+    contar((q) => q.in('status', ['draft', 'scheduled', 'processing'])),
+    contar((q) => q.eq('status', 'failed')),
+    contar((q) => q.eq('status', 'needs_review')),
+  ])
 
   const { data: proximas } = await supabase
     .from('scheduled_posts')
@@ -80,96 +78,106 @@ export default async function DashboardPage() {
   }
   const lista = (proximas ?? []) as unknown as Proxima[]
 
-  return (
-    <div className="max-w-4xl">
-      <p className={plaqueta}>Mesa de controle</p>
-      <h1 className={tituloPagina}>Dashboard</h1>
-      <p className={descricaoPagina}>
-        Horários no fuso do seu perfil ({fuso}).
-      </p>
+  const metricas = [
+    { rotulo: 'Hoje', valor: hoje },
+    { rotulo: 'Publicados', valor: publicados },
+    { rotulo: 'Pendentes', valor: pendentes },
+    { rotulo: 'Falhas', valor: falhas },
+  ]
 
-      {/* A linha de transmissão: o estado geral do transmissor, num relance. */}
-      <div
-        className={`${modulo} mt-5 flex flex-wrap items-center justify-between gap-3 px-4 py-2.5`}
-      >
-        {noAr > 0 ? (
-          <div className="flex items-center gap-2.5">
-            <span
-              aria-hidden
-              className="size-2.5 rounded-full bg-noar lampada-noar"
-            />
-            <span className="font-display text-sm font-semibold uppercase tracking-[0.16em] text-noar">
-              No ar
-            </span>
-            <span className="text-sm text-fosforo-dim">
-              {noAr} publicação(ões) sendo transmitida(s) agora
-            </span>
-          </div>
-        ) : (
-          <div className="flex items-center gap-2.5">
-            <span aria-hidden className="size-2.5 rounded-full bg-standby" />
-            <span className="font-display text-sm font-medium uppercase tracking-[0.16em] text-standby">
-              Standby
-            </span>
-            <span className="text-sm text-fosforo-dim">
-              aguardando o próximo horário da grade
-            </span>
-          </div>
-        )}
-        <StudioClock timeZone={fuso} />
+  return (
+    <div className="anima-entrada max-w-4xl">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h1 className={tituloPagina}>Dashboard</h1>
+          <p className={descricaoPagina}>
+            Horários no fuso do seu perfil ({fuso}).
+          </p>
+        </div>
+        <Link href="/dashboard/new" className={botaoPrimario}>
+          Nova publicação
+        </Link>
       </div>
 
       {emRevisao > 0 && (
         <Link
           href="/dashboard/review"
-          className="mt-4 flex items-center gap-2.5 rounded-md border border-ambar/40 bg-ambar/10 p-3 text-sm text-fosforo transition-colors hover:bg-ambar/15"
+          className="mt-6 flex items-center gap-2.5 rounded-xl border border-traco bg-white/[0.03] p-3.5 text-sm text-claro transition-colors duration-150 hover:border-traco-forte"
         >
-          <span aria-hidden className="size-2 shrink-0 rounded-full bg-ambar" />
+          <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-areia" />
           <span>
-            <strong className="font-mono">{emRevisao}</strong> publicação(ões)
-            aguardando sua decisão. O resultado não pôde ser confirmado e o
-            sistema não tenta de novo sozinho.
+            <strong className="font-semibold text-forte">{emRevisao}</strong>{' '}
+            publicação(ões) aguardando sua decisão. O resultado não pôde ser
+            confirmado e o sistema não tenta de novo sozinho.
+          </span>
+          <span aria-hidden className="ml-auto text-fraco">
+            →
           </span>
         </Link>
       )}
 
-      <dl className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <Indicador rotulo="Hoje" valor={hoje} />
-        <Indicador rotulo="Publicados" valor={publicados} />
-        <Indicador rotulo="Pendentes" valor={pendentes} />
-        <Indicador rotulo="Falhas" valor={falhas} alerta={falhas > 0} />
+      {/*
+        Métricas como uma régua única com divisórias — não quatro cards
+        idênticos. Os números são um dos poucos lugares do branco pleno.
+      */}
+      <dl
+        className={`${modulo} mt-6 grid grid-cols-2 divide-y divide-traco sm:grid-cols-4 sm:divide-x sm:divide-y-0`}
+      >
+        {metricas.map((m) => (
+          <div key={m.rotulo} className="px-5 py-4">
+            <dt className="text-[13px] text-medio">{m.rotulo}</dt>
+            <dd
+              className={`mt-1 text-[28px] font-semibold leading-9 tracking-[-0.02em] tabular-nums ${
+                m.rotulo === 'Falhas' && m.valor > 0
+                  ? 'text-rosa'
+                  : 'text-forte'
+              }`}
+            >
+              {m.valor}
+            </dd>
+          </div>
+        ))}
       </dl>
 
-      <h2 className={`${plaqueta} mt-8`}>Próximas publicações</h2>
+      {/* Lista sem moldura: composição diferente da régua de métricas. */}
+      <div className="mt-10 flex items-baseline justify-between">
+        <h2 className={plaqueta}>Próximas publicações</h2>
+        <Link
+          href="/dashboard/queue"
+          className="text-[13px] text-fraco transition-colors duration-150 hover:text-claro"
+        >
+          Ver fila →
+        </Link>
+      </div>
 
       {lista.length === 0 ? (
-        <p className="mt-2 text-sm text-fosforo-dim">
-          Nada programado.{' '}
-          <Link href="/dashboard/new" className="text-ambar underline">
+        <div className={`${estadoVazio} mt-3`}>
+          <p>Nada programado.</p>
+          <Link
+            href="/dashboard/new"
+            className="mt-3 inline-block text-claro underline underline-offset-4 transition-colors duration-150 hover:text-forte"
+          >
             Agendar uma publicação
           </Link>
-          .
-        </p>
+        </div>
       ) : (
-        <ul className={`${modulo} mt-2 divide-y divide-risco/60`}>
+        <ul className="mt-2 divide-y divide-white/5">
           {lista.map((p) => {
             const local = fromUtc(new Date(p.scheduled_at), fuso)
             return (
               <li
                 key={p.id}
-                className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2.5 text-sm"
+                className="-mx-3 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg px-3 py-3 text-sm transition-colors duration-150 hover:bg-white/[0.03]"
               >
-                <span className="font-mono text-[13px] tabular-nums text-ambar">
-                  {local.time}
-                </span>
-                <span className="font-mono text-[11px] tabular-nums text-fosforo-dim">
+                <span className="tabular-nums text-claro">{local.time}</span>
+                <span className="text-[13px] tabular-nums text-fraco">
                   {local.date}
                 </span>
-                <span className="whitespace-nowrap text-xs text-fosforo-dim">
+                <span className="whitespace-nowrap text-[13px] text-fraco">
                   u/{p.reddit_accounts?.username ?? '—'} → r/
                   {p.subreddits?.name ?? '—'}
                 </span>
-                <span className="min-w-0 flex-1 truncate text-fosforo">
+                <span className="min-w-0 flex-1 truncate text-claro">
                   {p.title}
                 </span>
                 <StatusChip status={p.status} />
@@ -178,29 +186,6 @@ export default async function DashboardPage() {
           })}
         </ul>
       )}
-    </div>
-  )
-}
-
-function Indicador({
-  rotulo,
-  valor,
-  alerta = false,
-}: {
-  rotulo: string
-  valor: number
-  alerta?: boolean
-}) {
-  return (
-    <div className={`${modulo} p-3`}>
-      <dt className={plaqueta}>{rotulo}</dt>
-      <dd
-        className={`mt-1 font-mono text-[32px] leading-9 tabular-nums ${
-          alerta ? 'text-tijolo' : 'text-fosforo'
-        }`}
-      >
-        {valor}
-      </dd>
     </div>
   )
 }

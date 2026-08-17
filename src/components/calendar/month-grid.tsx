@@ -51,28 +51,21 @@ export function MonthGrid({
   const link = (y: number, m: number) =>
     `/dashboard/calendar?year=${y}&month=${m}&tz=${encodeURIComponent(timeZone)}`
 
+  const seta =
+    'rounded-lg border border-traco px-2.5 py-1 text-sm text-medio transition-colors duration-150 hover:border-traco-forte hover:text-claro active:scale-[0.98]'
+
   return (
-    <div className="mt-5">
+    <div className="mt-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <Link
-            href={link(anterior.y, anterior.m)}
-            aria-label="Mês anterior"
-            className="rounded-sm border border-risco px-2 py-1 text-sm text-fosforo-dim transition-colors hover:bg-console-2 hover:text-fosforo"
-          >
+        <div className="flex items-center gap-2.5">
+          <Link href={link(anterior.y, anterior.m)} aria-label="Mês anterior" className={seta}>
             ←
           </Link>
-          <span className="font-display text-base font-semibold uppercase tracking-[0.1em] text-fosforo">
+          <span className="text-sm font-medium text-claro">
             {MESES[month - 1]}{' '}
-            <span className="font-mono text-sm font-normal tracking-normal text-fosforo-dim">
-              {year}
-            </span>
+            <span className="tabular-nums text-fraco">{year}</span>
           </span>
-          <Link
-            href={link(proximo.y, proximo.m)}
-            aria-label="Próximo mês"
-            className="rounded-sm border border-risco px-2 py-1 text-sm text-fosforo-dim transition-colors hover:bg-console-2 hover:text-fosforo"
-          >
+          <Link href={link(proximo.y, proximo.m)} aria-label="Próximo mês" className={seta}>
             →
           </Link>
         </div>
@@ -96,11 +89,11 @@ export function MonthGrid({
         </form>
       </div>
 
-      <div className="mt-3 grid grid-cols-7 gap-px overflow-hidden rounded-md border border-risco bg-risco">
+      <div className="mt-4 grid grid-cols-7 gap-px overflow-hidden rounded-xl border border-traco bg-traco">
         {SEMANA.map((d) => (
           <div
             key={d}
-            className="bg-estudio px-2 py-1.5 text-center font-display text-[11px] font-medium uppercase tracking-[0.14em] text-fosforo-dim"
+            className="bg-superficie px-2 py-2 text-center text-[11px] font-medium text-fraco"
           >
             {d}
           </div>
@@ -114,31 +107,32 @@ export function MonthGrid({
           return (
             <div
               key={dia.date}
-              className={`min-h-24 bg-console p-1.5 ${
-                dia.inMonth ? '' : 'opacity-45'
-              }`}
+              className={`min-h-24 bg-fundo p-1.5 ${dia.inMonth ? '' : 'opacity-40'}`}
             >
-              <span className="font-mono text-[11px] tabular-nums text-fosforo-dim">
+              <span className="px-1 text-[11px] tabular-nums text-fraco">
                 {dia.day}
               </span>
 
-              <ul className="mt-1 space-y-1">
+              <ul className="mt-1 space-y-0.5">
                 {visiveis.map((p) => {
                   const { time } = fromUtc(new Date(p.scheduled_at), timeZone)
                   return (
                     <li key={p.id}>
                       {/*
-                        Cada publicação é uma barra de sinal: régua à esquerda
-                        na cor do estado, horário em mono. A cor É o estado —
-                        a mesma linguagem de lâmpada do resto do console.
+                        O estado aparece só no ponto — o mesmo código de cor
+                        discreto dos chips, sem pintar a célula.
                       */}
                       <Link
                         href={`/dashboard/queue?from=${dia.date}&to=${dia.date}`}
                         title={`${p.title} — ${rotuloStatus(p.status)}`}
-                        className={`block truncate rounded-r-sm border-l-2 py-0.5 pl-1.5 pr-1 text-[11px] leading-4 transition-colors hover:bg-console-2 ${corStatus(p.status)}`}
+                        className="flex items-center gap-1.5 rounded-md px-1 py-0.5 text-[11px] leading-4 text-medio transition-colors duration-150 hover:bg-white/5 hover:text-claro"
                       >
-                        <span className="font-mono tabular-nums">{time}</span>{' '}
-                        u/{p.reddit_accounts?.username ?? '—'} · {p.title}
+                        <span
+                          aria-hidden
+                          className={`size-1 shrink-0 rounded-full ${corStatus(p.status)}`}
+                        />
+                        <span className="tabular-nums">{time}</span>
+                        <span className="truncate">{p.title}</span>
                       </Link>
                     </li>
                   )
@@ -148,7 +142,7 @@ export function MonthGrid({
               {resto > 0 && (
                 <Link
                   href={`/dashboard/queue?from=${dia.date}&to=${dia.date}`}
-                  className="mt-1 block font-mono text-[11px] text-fosforo-dim underline transition-colors hover:text-fosforo"
+                  className="mt-0.5 block px-1 text-[11px] tabular-nums text-fraco transition-colors duration-150 hover:text-claro"
                 >
                   +{resto}
                 </Link>

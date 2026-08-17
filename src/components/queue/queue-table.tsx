@@ -43,7 +43,7 @@ export function QueueTable({
 }) {
   if (itens.length === 0) {
     return (
-      <p className="mt-8 text-sm text-fosforo-dim">
+      <p className="mt-8 text-sm text-medio">
         Nenhuma publicação corresponde a estes filtros.
       </p>
     )
@@ -54,11 +54,11 @@ export function QueueTable({
       <table className="w-full text-sm">
         <thead className={cabecalhoTabela}>
           <tr>
-            <th className="px-3 py-2 font-medium">Quando</th>
-            <th className="px-3 py-2 font-medium">Conta → Comunidade</th>
-            <th className="px-3 py-2 font-medium">Título</th>
-            <th className="px-3 py-2 font-medium">Situação</th>
-            <th className="px-3 py-2 font-medium">Ações</th>
+            <th className="px-4 py-2.5 font-medium">Quando</th>
+            <th className="px-4 py-2.5 font-medium">Conta → Comunidade</th>
+            <th className="px-4 py-2.5 font-medium">Título</th>
+            <th className="px-4 py-2.5 font-medium">Situação</th>
+            <th className="px-4 py-2.5 font-medium">Ações</th>
           </tr>
         </thead>
         <tbody>
@@ -93,31 +93,29 @@ function QueueLinha({
 
   return (
     <>
-      <tr className="border-b border-risco/60 transition-colors last:border-0 hover:bg-console-2/50">
-        <td className="whitespace-nowrap px-3 py-2">
-          <span className="font-mono text-[13px] tabular-nums text-ambar">
-            {local.time}
-          </span>{' '}
-          <span className="font-mono text-[11px] tabular-nums text-fosforo-dim">
+      <tr className="border-b border-white/5 transition-colors last:border-0 hover:bg-white/[0.03]">
+        <td className="whitespace-nowrap px-4 py-3">
+          <span className="tabular-nums text-claro">{local.time}</span>{' '}
+          <span className="text-[13px] tabular-nums text-fraco">
             {local.date}
           </span>
         </td>
-        <td className="whitespace-nowrap px-3 py-2 text-xs text-fosforo-dim">
+        <td className="whitespace-nowrap px-4 py-3 text-xs text-medio">
           u/{item.reddit_accounts?.username ?? '—'} → r/
           {item.subreddits?.name ?? '—'}
         </td>
-        <td className="max-w-xs truncate px-3 py-2 text-fosforo">
+        <td className="max-w-xs truncate px-4 py-3 text-claro">
           {item.title}
         </td>
-        <td className="whitespace-nowrap px-3 py-2">
+        <td className="whitespace-nowrap px-4 py-3">
           <StatusChip status={item.status} />
           {item.retry_count > 0 && (
-            <span className="ml-1.5 font-mono text-[11px] text-fosforo-dim">
+            <span className="ml-1.5 text-xs tabular-nums text-fraco">
               {item.retry_count} tentativa(s)
             </span>
           )}
         </td>
-        <td className="whitespace-nowrap px-3 py-2">
+        <td className="whitespace-nowrap px-4 py-3">
           {/*
             Reagendar e cancelar aparecem apenas em draft e scheduled — a mesma
             regra que o trigger e a RPC já impõem. A interface não é a barreira;
@@ -128,7 +126,7 @@ function QueueLinha({
               <button
                 type="button"
                 onClick={() => setAberto((v) => !v)}
-                className="text-xs text-standby underline transition-colors hover:text-fosforo"
+                className="text-xs text-medio underline underline-offset-2 transition-colors duration-150 hover:text-claro"
               >
                 Reagendar
               </button>
@@ -137,14 +135,14 @@ function QueueLinha({
                 <button
                   type="submit"
                   disabled={cancelando}
-                  className="text-xs text-tijolo underline transition-colors hover:text-noar disabled:opacity-60"
+                  className="text-xs text-rosa/90 underline underline-offset-2 transition-colors duration-150 hover:text-rosa disabled:opacity-60"
                 >
                   Cancelar
                 </button>
               </form>
             </div>
           ) : (
-            <span className="text-xs text-fosforo-dim/60">—</span>
+            <span className="text-xs text-fraco/80">—</span>
           )}
         </td>
       </tr>
@@ -152,7 +150,7 @@ function QueueLinha({
       {(estadoCancelar.error || estadoReagendar.error) && (
         <tr>
           <td colSpan={5} className="px-3 pb-2">
-            <p className="text-xs text-tijolo" role="alert">
+            <p className="text-xs text-rosa" role="alert">
               {estadoCancelar.error ?? estadoReagendar.error}
             </p>
           </td>
@@ -160,8 +158,8 @@ function QueueLinha({
       )}
 
       {aberto && editavel && (
-        <tr className="border-b border-risco/60">
-          <td colSpan={5} className="bg-console-2 px-3 py-3">
+        <tr className="border-b border-white/5">
+          <td colSpan={5} className="anima-painel bg-eleva px-4 py-3.5">
             <form action={reagendar} className="flex flex-wrap items-end gap-2">
               <input type="hidden" name="postId" value={item.id} />
               <label className={rotuloCampo}>

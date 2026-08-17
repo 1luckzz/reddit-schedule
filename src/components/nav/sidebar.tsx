@@ -4,20 +4,22 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { NAV_ITEMS } from './nav-items'
 
-export function Sidebar({ email }: { email: string }) {
+/**
+ * Trilho de navegação: mesmo fundo da página, separado só pela borda.
+ * A sessão (e-mail e Sair) mora na topbar.
+ */
+export function Sidebar() {
   const pathname = usePathname()
 
   return (
-    <aside className="flex w-60 shrink-0 flex-col border-r border-risco bg-console">
-      <div className="flex items-center gap-2 border-b border-risco px-4 py-5">
-        {/* A lâmpada de energia do console. */}
-        <span aria-hidden className="size-2 rounded-full bg-ambar" />
-        <span className="font-display text-sm font-semibold uppercase tracking-[0.18em] text-fosforo">
+    <aside className="flex w-56 shrink-0 flex-col border-r border-traco bg-fundo">
+      <div className="px-5 pb-4 pt-5">
+        <span className="text-sm font-semibold tracking-[-0.01em] text-forte">
           Reddit Scheduler
         </span>
       </div>
 
-      <nav className="flex-1 space-y-px px-2 py-3">
+      <nav className="flex-1 space-y-0.5 px-3">
         {NAV_ITEMS.map(({ href, label, icon: Icon }) => {
           const active =
             href === '/dashboard' ? pathname === href : pathname.startsWith(href)
@@ -26,14 +28,14 @@ export function Sidebar({ email }: { email: string }) {
               key={href}
               href={href}
               aria-current={active ? 'page' : undefined}
-              className={`flex items-center gap-2.5 border-l-2 px-2.5 py-2 font-display text-[13px] font-medium uppercase tracking-[0.1em] transition-colors ${
+              className={`flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] transition-colors duration-150 ${
                 active
-                  ? 'border-ambar bg-console-2 text-fosforo'
-                  : 'border-transparent text-fosforo-dim hover:bg-console-2/60 hover:text-fosforo'
+                  ? 'bg-white/[0.07] font-medium text-forte'
+                  : 'text-medio hover:bg-white/5 hover:text-claro'
               }`}
             >
               <Icon
-                className={`size-4 ${active ? 'text-ambar' : 'text-fosforo-dim/70'}`}
+                className={`size-4 ${active ? 'text-claro' : 'text-fraco'}`}
                 aria-hidden
               />
               {label}
@@ -41,20 +43,6 @@ export function Sidebar({ email }: { email: string }) {
           )
         })}
       </nav>
-
-      <div className="border-t border-risco p-3">
-        <p
-          className="truncate px-1 font-mono text-[11px] text-fosforo-dim"
-          title={email}
-        >
-          {email}
-        </p>
-        <form action="/auth/signout" method="post">
-          <button className="mt-2 w-full rounded-sm border border-risco px-2 py-1.5 font-display text-[11px] font-medium uppercase tracking-[0.12em] text-fosforo-dim transition-colors hover:bg-console-2 hover:text-fosforo">
-            Sair
-          </button>
-        </form>
-      </div>
     </aside>
   )
 }

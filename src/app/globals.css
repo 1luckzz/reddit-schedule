@@ -1,47 +1,51 @@
 @import "tailwindcss";
 
 /* ------------------------------------------------------------------
-   Sala de transmissão — tema único, escuro quente.
+   Grafite — preto e branco premium, tema único.
 
-   O painel é a mesa de controle de uma emissora: fundo de carvão com
-   subtom marrom (baquelite, não OLED), texto em creme fósforo e um
-   sistema de lâmpadas em que COR É ESTADO, nunca decoração:
+   Cinco cinzas trabalhados e branco escasso:
+     fundo #0A0A0B · superfície #111113 · elevação #17171A
+     bordas #232326 → #2E2E32 no hover
+     texto comum em off-white #E7E7E9; o branco #FAFAFA é reservado a
+     títulos importantes, números-chave e ao botão primário.
 
-     âmbar    → atenção / ação primária / aguardando revisão
-     vermelho → NO AR (publicando agora) — vivo, não erro
-     tijolo   → falhou (fosco de propósito, sem brilho de lâmpada)
-     verde    → publicado
-     azul     → programado (standby)
+   Estados em tons dessaturados, sempre como um ponto discreto ao lado
+   do rótulo — nunca como cor dominante:
+     sálvia (publicado) · areia (revisão) · rosa-seco (falhou)
+     aço (programado) · ponto branco pulsando (publicando agora)
    ------------------------------------------------------------------ */
 :root {
-  --estudio: #191511;
-  --console: #221d18;
-  --console-2: #2a241d;
-  --risco: #3a3228;
-  --fosforo: #efe6d8;
-  --fosforo-dim: #a89c8a;
-  --ambar: #e5a83b;
-  --noar: #e0473d;
-  --tijolo: #b0524a;
-  --ok: #7da96b;
-  --standby: #7a9bb8;
+  --fundo: #0a0a0b;
+  --superficie: #111113;
+  --eleva: #17171a;
+  --traco: #232326;
+  --traco-forte: #2e2e32;
+  --claro: #e7e7e9;
+  --forte: #fafafa;
+  --medio: #9c9ca3;
+  --fraco: #68686f;
+  --salvia: #8faf9a;
+  --areia: #b5a17c;
+  --rosa: #b07a7a;
+  --aco: #8a9bb0;
 }
 
 @theme inline {
-  --color-estudio: var(--estudio);
-  --color-console: var(--console);
-  --color-console-2: var(--console-2);
-  --color-risco: var(--risco);
-  --color-fosforo: var(--fosforo);
-  --color-fosforo-dim: var(--fosforo-dim);
-  --color-ambar: var(--ambar);
-  --color-noar: var(--noar);
-  --color-tijolo: var(--tijolo);
-  --color-ok: var(--ok);
-  --color-standby: var(--standby);
-  --font-sans: var(--font-barlow);
-  --font-display: var(--font-barlow-condensed);
-  --font-mono: var(--font-plex-mono);
+  --color-fundo: var(--fundo);
+  --color-superficie: var(--superficie);
+  --color-eleva: var(--eleva);
+  --color-traco: var(--traco);
+  --color-traco-forte: var(--traco-forte);
+  --color-claro: var(--claro);
+  --color-forte: var(--forte);
+  --color-medio: var(--medio);
+  --color-fraco: var(--fraco);
+  --color-salvia: var(--salvia);
+  --color-areia: var(--areia);
+  --color-rosa: var(--rosa);
+  --color-aco: var(--aco);
+  --font-sans: var(--font-inter);
+  --font-mono: var(--font-geist-mono);
 }
 
 html {
@@ -50,48 +54,82 @@ html {
 }
 
 body {
-  background: var(--estudio);
-  color: var(--fosforo);
-  font-family: var(--font-barlow), system-ui, sans-serif;
+  background: var(--fundo);
+  color: var(--claro);
+  font-family: var(--font-inter), system-ui, sans-serif;
 }
 
-/* Foco visível em âmbar em todo elemento interativo. */
+/* Foco visível e discreto. */
 :focus-visible {
-  outline: 2px solid var(--ambar);
+  outline: 2px solid rgb(255 255 255 / 0.35);
   outline-offset: 2px;
 }
 
 ::selection {
-  background: color-mix(in srgb, var(--ambar) 30%, transparent);
+  background: rgb(255 255 255 / 0.15);
 }
 
-/* Checkboxes e radios nativos acompanham a lâmpada âmbar do console. */
-input[type='checkbox'],
-input[type='radio'] {
-  accent-color: var(--ambar);
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--forte);
 }
 
 /* ------------------------------------------------------------------
-   A lâmpada NO AR: o único movimento orquestrado da interface.
+   Microinterações. Entradas com 6–10px de deslocamento em 180–220ms;
+   hover e press continuam rápidos, direto nas classes utilitárias.
    ------------------------------------------------------------------ */
-@keyframes pulso-noar {
+
+/* Conteúdo de página, uma vez por navegação. */
+@keyframes entrada {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.anima-entrada {
+  animation: entrada 200ms ease-out both;
+}
+
+/* Painéis que abrem no lugar: reagendar, configurar rede, candidatos. */
+@keyframes painel {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.anima-painel {
+  animation: painel 180ms ease-out both;
+}
+
+/* O ponto de "Publicando agora". */
+@keyframes pulso-suave {
   0%,
   100% {
     opacity: 1;
-    box-shadow: 0 0 6px 1px color-mix(in srgb, var(--noar) 60%, transparent);
   }
   50% {
-    opacity: 0.5;
-    box-shadow: none;
+    opacity: 0.35;
   }
 }
 
-.lampada-noar {
-  animation: pulso-noar 1.6s ease-in-out infinite;
+.pulso-suave {
+  animation: pulso-suave 2.4s ease-in-out infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .lampada-noar {
+  .anima-entrada,
+  .anima-painel,
+  .pulso-suave {
     animation: none;
   }
 }

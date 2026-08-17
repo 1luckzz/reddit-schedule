@@ -6,8 +6,8 @@ import {
 import { SyncButton } from '@/components/communities/sync-button'
 import {
   descricaoPagina,
+  estadoVazio,
   modulo,
-  plaqueta,
   tituloPagina,
 } from '@/components/ui/estilo'
 
@@ -36,17 +36,16 @@ export default async function CommunitiesPage() {
   }
 
   return (
-    <div>
-      <p className={plaqueta}>Praças de exibição</p>
+    <div className="anima-entrada">
       <h1 className={tituloPagina}>Comunidades</h1>
       <p className={descricaoPagina}>
         Comunidades que cada conta modera, lidas da API oficial do Reddit.
       </p>
 
       {(contas ?? []).length === 0 ? (
-        <p className="mt-8 text-sm text-fosforo-dim">
+        <div className={`${estadoVazio} mt-6`}>
           Conecte uma conta Reddit para sincronizar comunidades.
-        </p>
+        </div>
       ) : (
         <div className="mt-6 space-y-4">
           {contas!.map((conta) => {
@@ -56,14 +55,14 @@ export default async function CommunitiesPage() {
             return (
               <section
                 key={conta.id}
-                className={`${modulo} p-4`}
+                className={`${modulo} p-5`}
               >
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
-                    <h2 className="font-medium text-fosforo">
+                    <h2 className="font-medium text-forte">
                       u/{conta.username}
                     </h2>
-                    <p className="mt-0.5 text-xs text-fosforo-dim">
+                    <p className="mt-0.5 text-xs text-medio">
                       {ultima
                         ? `Sincronizada em ${new Date(ultima).toLocaleString('pt-BR')}`
                         : 'Nunca sincronizada'}
@@ -75,7 +74,7 @@ export default async function CommunitiesPage() {
                   {conta.status === 'connected' ? (
                     <SyncButton accountId={conta.id} username={conta.username} />
                   ) : (
-                    <p className="text-xs text-tijolo">
+                    <p className="text-xs text-rosa">
                       Reconecte a conta para sincronizar.
                     </p>
                   )}

@@ -24,9 +24,10 @@ type Community = {
 type Flair = { id: string; text: string; modOnly: boolean }
 
 const field =
-  'mt-1 w-full rounded-sm border border-risco bg-estudio px-3 py-2 text-sm text-fosforo transition-colors focus:border-ambar'
-const label =
-  'block font-display text-[11px] font-medium uppercase tracking-[0.12em] text-fosforo-dim'
+  'mt-1.5 w-full rounded-lg border border-traco bg-fundo px-3 py-2 text-sm text-claro transition-colors placeholder:text-fraco focus:border-traco-forte'
+const label = 'block text-[13px] font-medium text-medio'
+/** Título de cada bloco do formulário. */
+const secao = 'text-sm font-medium text-claro'
 
 export function NewPostForm({
   accounts,
@@ -98,241 +99,254 @@ export function NewPostForm({
   const precisaComentario = url.trim() !== '' && body.trim() !== ''
 
   return (
-    <form action={action} className="mt-6 space-y-5">
-      {/* Conta */}
-      <div>
-        <label htmlFor="accountId" className={label}>
-          Conta Reddit
-        </label>
-        <select
-          id="accountId"
-          name="accountId"
-          required
-          className={field}
-          value={accountId}
-          onChange={(e) => trocarConta(e.target.value)}
-        >
-          {accounts.map((a) => (
-            <option key={a.id} value={a.id}>
-              u/{a.username}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      {/* Comunidade — apenas as da conta escolhida */}
-      <div>
-        <label htmlFor="subredditId" className={label}>
-          Comunidade
-        </label>
-        <select
-          id="subredditId"
-          name="subredditId"
-          required
-          className={field}
-          value={subredditId}
-          onChange={(e) => setSubredditId(e.target.value)}
-        >
-          <option value="">Selecione…</option>
-          {doAccount.map((c) => (
-            <option key={c.id} value={c.id}>
-              r/{c.name}
-            </option>
-          ))}
-        </select>
-        {doAccount.length === 0 && (
-          <p className="mt-1 text-xs text-ambar">
-            Esta conta ainda não tem comunidades sincronizadas.
-          </p>
-        )}
-      </div>
-
-      {/* Título */}
-      <div>
-        <label htmlFor="title" className={label}>
-          Título
-        </label>
-        <input
-          id="title"
-          name="title"
-          required
-          maxLength={300}
-          className={field}
-        />
-      </div>
-
-      {/* Link */}
-      <div>
-        <label htmlFor="url" className={label}>
-          Link
-        </label>
-        <input
-          id="url"
-          name="url"
-          type="url"
-          placeholder="https://…"
-          className={field}
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-        />
-      </div>
-
-      {/* Texto */}
-      <div>
-        <label htmlFor="body" className={label}>
-          Texto do post
-        </label>
-        <textarea
-          id="body"
-          name="body"
-          rows={8}
-          className={field}
-          value={body}
-          onChange={(e) => setBody(e.target.value)}
-        />
-      </div>
-
-      {/* Aviso da limitação da API */}
-      {precisaComentario && (
-        <div className="rounded-md border border-ambar/40 bg-ambar/10 p-3">
-          <p className="text-sm text-fosforo">
-            A API do Reddit não permite link e texto na mesma publicação.
-            O texto pode ser enviado como comentário automático logo após a
-            publicação.
-          </p>
-          <label className="mt-2 flex items-center gap-2 text-sm text-fosforo">
-            <input type="checkbox" name="allowCommentFallback" />
-            Enviar o texto como comentário automático
-          </label>
-        </div>
-      )}
-
-      {/* Flair */}
-      <div>
-        <label htmlFor="flairId" className={label}>
-          Flair
-        </label>
-        <select id="flairId" name="flairId" className={field}>
-          <option value="">Sem flair</option>
-          {flairs
-            .filter((f) => !f.modOnly)
-            .map((f) => (
-              <option key={f.id} value={f.id}>
-                {f.text}
-              </option>
-            ))}
-        </select>
-        {flairErro && (
-          <p className="mt-1 text-xs text-tijolo" role="alert">
-            {flairErro}
-          </p>
-        )}
-      </div>
-
-      {/* Marcadores */}
-      <div className="flex flex-wrap gap-4">
-        <label className="flex items-center gap-2 text-sm text-fosforo">
-          <input type="checkbox" name="nsfw" />
-          Conteúdo adulto (NSFW)
-        </label>
-        <label className="flex items-center gap-2 text-sm text-fosforo">
-          <input type="checkbox" name="spoiler" />
-          Spoiler
-        </label>
-      </div>
-
-      {/* Fuso */}
-      <div>
-        <label htmlFor="timeZone" className={label}>
-          Fuso horário
-        </label>
-        <select
-          id="timeZone"
-          name="timeZone"
-          className={field}
-          defaultValue="America/Sao_Paulo"
-        >
-          {SUPPORTED_TIME_ZONES.map((tz) => (
-            <option key={tz} value={tz}>
-              {tz}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      {/* Publicar agora vs. programar */}
-      <fieldset>
-        <legend className={label}>Publicação</legend>
-        <label className="mt-2 flex items-center gap-2 text-sm">
-          <input
-            type="radio"
-            name="publishMode"
-            value="now"
-            checked={publishMode === 'now'}
-            onChange={() => setPublishMode('now')}
-          />
-          Publicar agora
-        </label>
-        <label className="mt-1 flex items-center gap-2 text-sm">
-          <input
-            type="radio"
-            name="publishMode"
-            value="schedule"
-            checked={publishMode === 'schedule'}
-            onChange={() => setPublishMode('schedule')}
-          />
-          Programar
-        </label>
-      </fieldset>
-
-      {/* Data e hora — só fazem sentido no modo programar */}
-      {publishMode === 'schedule' && (
-        <div className="grid gap-4 sm:grid-cols-2">
+    <form action={action} className="mt-8 space-y-8">
+      {/* ---------------- Destino ---------------- */}
+      <section>
+        <h2 className={secao}>Destino</h2>
+        <div className="mt-3 grid gap-4 sm:grid-cols-2">
           <div>
-            <label htmlFor="date" className={label}>
-              Data
+            <label htmlFor="accountId" className={label}>
+              Conta Reddit
             </label>
-            <input id="date" name="date" type="date" className={field} />
+            <select
+              id="accountId"
+              name="accountId"
+              required
+              className={field}
+              value={accountId}
+              onChange={(e) => trocarConta(e.target.value)}
+            >
+              {accounts.map((a) => (
+                <option key={a.id} value={a.id}>
+                  u/{a.username}
+                </option>
+              ))}
+            </select>
           </div>
+
           <div>
-            <label htmlFor="time" className={label}>
-              Horário
+            <label htmlFor="subredditId" className={label}>
+              Comunidade
             </label>
-            <input id="time" name="time" type="time" className={field} />
+            <select
+              id="subredditId"
+              name="subredditId"
+              required
+              className={field}
+              value={subredditId}
+              onChange={(e) => setSubredditId(e.target.value)}
+            >
+              <option value="">Selecione…</option>
+              {doAccount.map((c) => (
+                <option key={c.id} value={c.id}>
+                  r/{c.name}
+                </option>
+              ))}
+            </select>
+            {doAccount.length === 0 && (
+              <p className="mt-1.5 text-xs text-areia">
+                Esta conta ainda não tem comunidades sincronizadas.
+              </p>
+            )}
           </div>
         </div>
-      )}
+      </section>
 
-      {/* Horário que acontece duas vezes: o usuário escolhe qual */}
-      {state.timeChoices && (
-        <div className="rounded-md border border-ambar/40 bg-ambar/10 p-3">
-          <p className="text-sm text-fosforo">
-            Este horário acontece duas vezes no dia escolhido, por causa do fim
-            do horário de verão. Escolha qual delas usar:
-          </p>
-          <div className="mt-2 space-y-1">
-            {state.timeChoices.map((c) => (
-              <label
-                key={c.index}
-                className="flex items-center gap-2 text-sm text-fosforo"
-              >
+      {/* ---------------- Conteúdo ---------------- */}
+      <section className="border-t border-traco pt-6">
+        <h2 className={secao}>Conteúdo</h2>
+        <div className="mt-3 space-y-4">
+          <div>
+            <label htmlFor="title" className={label}>
+              Título
+            </label>
+            <input
+              id="title"
+              name="title"
+              required
+              maxLength={300}
+              className={field}
+            />
+          </div>
+
+          <div>
+            <label htmlFor="url" className={label}>
+              Link
+            </label>
+            <input
+              id="url"
+              name="url"
+              type="url"
+              placeholder="https://…"
+              className={field}
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+            />
+          </div>
+
+          <div>
+            <label htmlFor="body" className={label}>
+              Texto do post
+            </label>
+            <textarea
+              id="body"
+              name="body"
+              rows={8}
+              className={field}
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+            />
+          </div>
+
+          {/* Aviso da limitação da API */}
+          {precisaComentario && (
+            <div className="anima-painel rounded-lg border border-areia/30 bg-areia/10 p-3.5">
+              <p className="text-sm text-claro">
+                A API do Reddit não permite link e texto na mesma publicação.
+                O texto pode ser enviado como comentário automático logo após a
+                publicação.
+              </p>
+              <label className="mt-2.5 flex items-center gap-2 text-sm text-claro">
+                <input type="checkbox" name="allowCommentFallback" />
+                Enviar o texto como comentário automático
+              </label>
+            </div>
+          )}
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div>
+              <label htmlFor="flairId" className={label}>
+                Flair
+              </label>
+              <select id="flairId" name="flairId" className={field}>
+                <option value="">Sem flair</option>
+                {flairs
+                  .filter((f) => !f.modOnly)
+                  .map((f) => (
+                    <option key={f.id} value={f.id}>
+                      {f.text}
+                    </option>
+                  ))}
+              </select>
+              {flairErro && (
+                <p className="mt-1.5 text-xs text-rosa" role="alert">
+                  {flairErro}
+                </p>
+              )}
+            </div>
+
+            <div className="flex flex-wrap items-end gap-5 pb-2.5">
+              <label className="flex items-center gap-2 text-sm text-claro">
+                <input type="checkbox" name="nsfw" />
+                Conteúdo adulto (NSFW)
+              </label>
+              <label className="flex items-center gap-2 text-sm text-claro">
+                <input type="checkbox" name="spoiler" />
+                Spoiler
+              </label>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ---------------- Programação ---------------- */}
+      <section className="border-t border-traco pt-6">
+        <h2 className={secao}>Programação</h2>
+        <div className="mt-3 space-y-4">
+          <div className="sm:max-w-xs">
+            <label htmlFor="timeZone" className={label}>
+              Fuso horário
+            </label>
+            <select
+              id="timeZone"
+              name="timeZone"
+              className={field}
+              defaultValue="America/Sao_Paulo"
+            >
+              {SUPPORTED_TIME_ZONES.map((tz) => (
+                <option key={tz} value={tz}>
+                  {tz}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <fieldset>
+            <legend className={label}>Publicação</legend>
+            <div className="mt-2 flex flex-wrap gap-5">
+              <label className="flex items-center gap-2 text-sm text-claro">
                 <input
                   type="radio"
-                  name="occurrence"
-                  value={String(c.index)}
-                  defaultChecked={c.index === 0}
+                  name="publishMode"
+                  value="now"
+                  checked={publishMode === 'now'}
+                  onChange={() => setPublishMode('now')}
                 />
-                {c.index === 0 ? 'Primeira ocorrência' : 'Segunda ocorrência'} (
-                {c.offsetLabel})
+                Publicar agora
               </label>
-            ))}
-          </div>
-        </div>
-      )}
+              <label className="flex items-center gap-2 text-sm text-claro">
+                <input
+                  type="radio"
+                  name="publishMode"
+                  value="schedule"
+                  checked={publishMode === 'schedule'}
+                  onChange={() => setPublishMode('schedule')}
+                />
+                Programar
+              </label>
+            </div>
+          </fieldset>
 
-      {/* Comentário automático */}
-      <div className="rounded-md border border-risco bg-console p-4">
-        <label className="flex items-center gap-2 text-sm font-medium text-fosforo">
+          {/* Data e hora — só fazem sentido no modo programar */}
+          {publishMode === 'schedule' && (
+            <div className="anima-painel grid gap-4 sm:grid-cols-2">
+              <div>
+                <label htmlFor="date" className={label}>
+                  Data
+                </label>
+                <input id="date" name="date" type="date" className={field} />
+              </div>
+              <div>
+                <label htmlFor="time" className={label}>
+                  Horário
+                </label>
+                <input id="time" name="time" type="time" className={field} />
+              </div>
+            </div>
+          )}
+
+          {/* Horário que acontece duas vezes: o usuário escolhe qual */}
+          {state.timeChoices && (
+            <div className="anima-painel rounded-lg border border-areia/30 bg-areia/10 p-3.5">
+              <p className="text-sm text-claro">
+                Este horário acontece duas vezes no dia escolhido, por causa do
+                fim do horário de verão. Escolha qual delas usar:
+              </p>
+              <div className="mt-2.5 space-y-1.5">
+                {state.timeChoices.map((c) => (
+                  <label
+                    key={c.index}
+                    className="flex items-center gap-2 text-sm text-claro"
+                  >
+                    <input
+                      type="radio"
+                      name="occurrence"
+                      value={String(c.index)}
+                      defaultChecked={c.index === 0}
+                    />
+                    {c.index === 0 ? 'Primeira ocorrência' : 'Segunda ocorrência'} (
+                    {c.offsetLabel})
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </section>
+
+      {/* ---------------- Comentário automático ---------------- */}
+      <section className="border-t border-traco pt-6">
+        <label className="flex items-center gap-2 text-sm font-medium text-claro">
           <input
             type="checkbox"
             name="addComment"
@@ -343,7 +357,7 @@ export function NewPostForm({
         </label>
 
         {addComment && (
-          <div className="mt-3 space-y-3">
+          <div className="anima-painel mt-4 space-y-4">
             <div>
               <label htmlFor="commentBody" className={label}>
                 Texto do comentário
@@ -356,39 +370,41 @@ export function NewPostForm({
               />
             </div>
 
-            <div>
-              <label htmlFor="commentMode" className={label}>
-                Quando comentar
-              </label>
-              <select
-                id="commentMode"
-                name="commentMode"
-                className={field}
-                value={commentMode}
-                onChange={(e) => setCommentMode(e.target.value)}
-              >
-                <option value="immediate">
-                  Imediatamente após a publicação
-                </option>
-                <option value="delay">Minutos depois da publicação</option>
-                <option value="absolute">Em um horário específico</option>
-              </select>
-            </div>
-
-            {commentMode === 'delay' && (
+            <div className="grid gap-4 sm:grid-cols-2">
               <div>
-                <label htmlFor="commentDelayMinutes" className={label}>
-                  Minutos após a publicação
+                <label htmlFor="commentMode" className={label}>
+                  Quando comentar
                 </label>
-                <input
-                  id="commentDelayMinutes"
-                  name="commentDelayMinutes"
-                  type="number"
-                  min={0}
+                <select
+                  id="commentMode"
+                  name="commentMode"
                   className={field}
-                />
+                  value={commentMode}
+                  onChange={(e) => setCommentMode(e.target.value)}
+                >
+                  <option value="immediate">
+                    Imediatamente após a publicação
+                  </option>
+                  <option value="delay">Minutos depois da publicação</option>
+                  <option value="absolute">Em um horário específico</option>
+                </select>
               </div>
-            )}
+
+              {commentMode === 'delay' && (
+                <div>
+                  <label htmlFor="commentDelayMinutes" className={label}>
+                    Minutos após a publicação
+                  </label>
+                  <input
+                    id="commentDelayMinutes"
+                    name="commentDelayMinutes"
+                    type="number"
+                    min={0}
+                    className={field}
+                  />
+                </div>
+              )}
+            </div>
 
             {commentMode === 'absolute' && (
               <div className="grid gap-4 sm:grid-cols-2">
@@ -417,33 +433,35 @@ export function NewPostForm({
               </div>
             )}
 
-            <p className="text-xs text-fosforo-dim">
+            <p className="text-xs text-fraco">
               O comentário só é enviado depois que a publicação for concluída
               com sucesso, sempre pela mesma conta.
             </p>
           </div>
         )}
+      </section>
+
+      <div className="border-t border-traco pt-6">
+        {state.error && (
+          <p role="alert" className="mb-3 text-sm text-rosa">
+            {state.error}
+          </p>
+        )}
+        {state.postId && (
+          <p className="mb-3 text-sm text-salvia">Publicação agendada.</p>
+        )}
+
+        <button
+          disabled={pending}
+          className="rounded-lg bg-forte px-4 py-2 text-sm font-medium text-fundo transition-[opacity,transform] duration-150 hover:opacity-90 active:scale-[0.98] disabled:opacity-50"
+        >
+          {pending
+            ? 'Salvando…'
+            : publishMode === 'now'
+              ? 'Publicar agora'
+              : 'Programar publicação'}
+        </button>
       </div>
-
-      {state.error && (
-        <p role="alert" className="text-sm text-tijolo">
-          {state.error}
-        </p>
-      )}
-      {state.postId && (
-        <p className="text-sm text-ok">Publicação agendada.</p>
-      )}
-
-      <button
-        disabled={pending}
-        className="rounded-sm bg-ambar px-4 py-2 font-display text-sm font-semibold uppercase tracking-[0.08em] text-estudio transition-opacity hover:opacity-90 disabled:opacity-50"
-      >
-        {pending
-          ? 'Salvando…'
-          : publishMode === 'now'
-            ? 'Publicar agora'
-            : 'Programar publicação'}
-      </button>
     </form>
   )
 }

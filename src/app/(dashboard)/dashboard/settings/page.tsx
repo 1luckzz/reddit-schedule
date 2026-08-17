@@ -42,21 +42,21 @@ export default async function SettingsPage() {
   })
 
   return (
-    <div className="max-w-2xl">
-      <p className={plaqueta}>Cabine técnica</p>
+    <div className="anima-entrada max-w-2xl">
       <h1 className={tituloPagina}>Configurações</h1>
 
-      <section className={`${modulo} mt-6 p-4`}>
+      {/* O status do worker é o destaque; o resto são linhas quietas. */}
+      <section className={`${modulo} mt-6 p-5`}>
         <h2 className={plaqueta}>Status do worker</h2>
 
         {saude.parado ? (
-          <div className="mt-3 flex items-start gap-2.5 rounded-sm border border-tijolo/40 bg-tijolo/10 p-3">
+          <div className="mt-3 flex items-start gap-2.5 rounded-lg border border-rosa/30 bg-rosa/10 p-3.5">
             <span
               aria-hidden
-              className="mt-1 size-2.5 shrink-0 rounded-full bg-tijolo"
+              className="mt-[7px] size-1.5 shrink-0 rounded-full bg-rosa"
             />
-            <p className="text-sm text-fosforo">
-              <strong>
+            <p className="text-sm text-claro">
+              <strong className="font-semibold text-forte">
                 {saude.atrasadas} publicação(ões) já venceram e continuam na
                 fila.
               </strong>{' '}
@@ -66,17 +66,17 @@ export default async function SettingsPage() {
           </div>
         ) : (
           <div className="mt-3 flex items-center gap-2.5">
-            <span aria-hidden className="size-2.5 rounded-full bg-ok" />
-            <p className="text-sm text-fosforo-dim">
+            <span aria-hidden className="size-1.5 rounded-full bg-salvia" />
+            <p className="text-sm text-medio">
               Nenhuma publicação vencida na fila.
             </p>
           </div>
         )}
 
-        <dl className="mt-3 space-y-1 text-sm">
+        <dl className="mt-4 space-y-1 text-sm">
           <div className="flex flex-wrap gap-2">
-            <dt className="text-fosforo-dim">Última atividade registrada:</dt>
-            <dd className="font-mono text-[13px] text-fosforo">
+            <dt className="text-fraco">Última atividade registrada:</dt>
+            <dd className="tabular-nums text-claro">
               {saude.minutosDesdeAtividade === null
                 ? 'nenhuma ainda'
                 : `${saude.minutosDesdeAtividade} min atrás`}
@@ -85,37 +85,41 @@ export default async function SettingsPage() {
         </dl>
 
         {saude.ocioso && !saude.parado && (
-          <p className="mt-2 text-xs text-fosforo-dim">
+          <p className="mt-2 text-xs text-fraco">
             Sem atividade nos últimos {LIMITE_INATIVIDADE_MINUTOS} minutos. Isso
             é esperado quando não há nada agendado — o worker só registra
             quando publica.
           </p>
         )}
 
-        <p className="mt-3 text-xs text-fosforo-dim">
+        <p className="mt-4 border-t border-white/5 pt-3 text-xs text-fraco">
           O intervalo do ciclo, o tamanho do lote e o tempo do reaper são
           definidos por variáveis de ambiente na máquina do worker, e por isso
           não são editáveis aqui.
         </p>
       </section>
 
-      <section className={`${modulo} mt-4 p-4`}>
-        <h2 className={plaqueta}>Integração com o Reddit</h2>
+      <section className="mt-8 border-t border-traco pt-5">
+        <h2 className="text-sm font-medium text-claro">
+          Integração com o Reddit
+        </h2>
         {/*
           Apenas se está configurada. O segredo do app NUNCA é exibido, nem
           parcialmente: um prefixo já reduz o espaço de busca de quem tentar
           adivinhar, e não há nada que a interface ganhe em mostrá-lo.
         */}
-        <p className="mt-2 text-sm text-fosforo-dim">
+        <p className="mt-1.5 text-sm text-medio">
           As credenciais do app OAuth ficam no ambiente do servidor. Elas não
           são exibidas aqui, nem parcialmente.
         </p>
       </section>
 
-      <section className={`${modulo} mt-4 p-4`}>
-        <h2 className={plaqueta}>Fuso horário do perfil</h2>
-        <p className="mt-2 text-sm text-fosforo-dim">
-          <span className="font-mono text-[13px] text-fosforo">
+      <section className="mt-6 border-t border-traco pt-5">
+        <h2 className="text-sm font-medium text-claro">
+          Fuso horário do perfil
+        </h2>
+        <p className="mt-1.5 text-sm text-medio">
+          <span className="text-claro">
             {perfil?.timezone ?? 'America/Sao_Paulo'}
           </span>{' '}
           — usado para definir o que é &quot;hoje&quot; nos indicadores do

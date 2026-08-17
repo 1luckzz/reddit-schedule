@@ -4,7 +4,7 @@ import { AccountCard, type NetworkRow } from '@/components/accounts/account-card
 import {
   botaoPrimario,
   descricaoPagina,
-  plaqueta,
+  estadoVazio,
   tituloPagina,
 } from '@/components/ui/estilo'
 
@@ -42,10 +42,9 @@ export default async function AccountsPage({
   )
 
   return (
-    <div>
+    <div className="anima-entrada">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <p className={plaqueta}>Canais conectados</p>
           <h1 className={tituloPagina}>Contas Reddit</h1>
           <p className={descricaoPagina}>
             Conecte suas contas via OAuth oficial do Reddit.
@@ -59,16 +58,16 @@ export default async function AccountsPage({
       {erro && (
         <p
           role="alert"
-          className="mt-4 rounded-md border border-tijolo/40 bg-tijolo/10 px-3 py-2 text-sm text-tijolo"
+          className="mt-4 rounded-xl border border-rosa/30 bg-rosa/10 px-3 py-2 text-sm text-rosa"
         >
           {MENSAGENS[erro] ?? 'Não foi possível concluir a operação.'}
         </p>
       )}
 
       {(contas ?? []).length === 0 ? (
-        <p className="mt-8 text-sm text-fosforo-dim">
+        <div className={`${estadoVazio} mt-6`}>
           Nenhuma conta conectada ainda.
-        </p>
+        </div>
       ) : (
         <ul className="mt-6 space-y-3">
           {contas!.map((conta) => (

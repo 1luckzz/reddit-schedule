@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation'
 import { Sidebar } from '@/components/nav/sidebar'
+import { Topbar } from '@/components/nav/topbar'
 import { requireUser, UnauthenticatedError } from '@/lib/auth/require-user'
 
 export default async function DashboardLayout({
@@ -16,9 +17,12 @@ export default async function DashboardLayout({
   }
 
   return (
-    <div className="flex min-h-screen bg-estudio">
-      <Sidebar email={user.email} />
-      <main className="flex-1 overflow-x-auto p-8">{children}</main>
+    <div className="flex min-h-screen bg-fundo">
+      <Sidebar />
+      <div className="flex min-w-0 flex-1 flex-col">
+        <Topbar email={user.email} />
+        <main className="flex-1 overflow-x-auto p-8">{children}</main>
+      </div>
     </div>
   )
 }

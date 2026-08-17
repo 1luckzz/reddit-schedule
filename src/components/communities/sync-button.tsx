@@ -23,19 +23,19 @@ export function SyncButton({
         <input type="hidden" name="accountId" value={accountId} />
         <button
           disabled={pending}
-          className="rounded-sm border border-ambar/50 px-2.5 py-1.5 font-display text-xs font-medium uppercase tracking-[0.08em] text-ambar transition-colors hover:bg-ambar/15 disabled:opacity-50"
+          className="rounded-lg border border-traco px-3 py-1.5 text-[13px] text-medio transition-colors duration-150 hover:border-traco-forte hover:text-claro active:scale-[0.98] disabled:opacity-50"
         >
           {pending ? 'Sincronizando…' : `Sincronizar u/${username}`}
         </button>
       </form>
 
       {state.error && (
-        <p role="alert" className="mt-2 text-xs text-tijolo">
+        <p role="alert" className="mt-2 text-xs text-rosa">
           {state.error}
         </p>
       )}
       {state.message && (
-        <p className="mt-2 text-xs text-ok">
+        <p className="mt-2 text-xs text-salvia">
           {state.message}
         </p>
       )}

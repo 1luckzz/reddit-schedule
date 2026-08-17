@@ -2,7 +2,7 @@ import { createServerSupabase } from '@/lib/supabase/server'
 import { ReviewCard, type ReviewRow } from '@/components/review/review-card'
 import {
   descricaoPagina,
-  plaqueta,
+  estadoVazio,
   tituloPagina,
 } from '@/components/ui/estilo'
 
@@ -24,8 +24,7 @@ export default async function ReviewPage() {
   const lista = (itens ?? []) as unknown as ReviewRow[]
 
   return (
-    <div className="max-w-3xl">
-      <p className={plaqueta}>Mesa de incidentes</p>
+    <div className="anima-entrada max-w-3xl">
       <h1 className={tituloPagina}>Revisão</h1>
       <p className={descricaoPagina}>
         Publicações cujo resultado não pôde ser confirmado. O sistema não tenta
@@ -33,7 +32,7 @@ export default async function ReviewPage() {
       </p>
 
       {lista.length === 0 ? (
-        <p className="mt-8 text-sm text-fosforo-dim">Nada aguardando revisão.</p>
+        <div className={`${estadoVazio} mt-6`}>Nada aguardando revisão.</div>
       ) : (
         <ul className="mt-6 space-y-3">
           {lista.map((item) => (

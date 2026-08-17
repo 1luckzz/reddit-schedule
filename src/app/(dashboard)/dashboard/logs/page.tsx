@@ -4,8 +4,8 @@ import {
   cabecalhoTabela,
   campo,
   descricaoPagina,
+  estadoVazio,
   modulo,
-  plaqueta,
   rotuloCampo,
   tituloPagina,
 } from '@/components/ui/estilo'
@@ -22,21 +22,13 @@ const ROTULO_OUTCOME: Record<string, string> = {
   unknown: 'Resultado desconhecido',
 }
 
-// A mesma linguagem de lâmpada dos status de publicação: verde para o que
-// concluiu, tijolo fosco para falha, azul para retentativa, âmbar para o
-// desfecho que precisa de atenção humana.
-const COR_OUTCOME: Record<string, string> = {
-  success: 'text-ok border-ok/30 bg-ok/10',
-  failure: 'text-tijolo border-tijolo/35 bg-tijolo/10',
-  retry: 'text-standby border-standby/30 bg-standby/10',
-  unknown: 'text-ambar border-ambar/35 bg-ambar/10',
-}
-
-const LAMPADA_OUTCOME: Record<string, string> = {
-  success: 'bg-ok',
-  failure: 'bg-tijolo',
-  retry: 'bg-standby',
-  unknown: 'bg-ambar',
+// O mesmo código de estado discreto dos chips de publicação: chip cinza,
+// desfecho indicado só pelo ponto dessaturado.
+const PONTO_OUTCOME: Record<string, string> = {
+  success: 'bg-salvia',
+  failure: 'bg-rosa',
+  retry: 'bg-aco',
+  unknown: 'bg-areia',
 }
 
 export default async function LogsPage({
@@ -68,8 +60,7 @@ export default async function LogsPage({
   const { data: logs } = await consulta
 
   return (
-    <div>
-      <p className={plaqueta}>Telemetria do transmissor</p>
+    <div className="anima-entrada">
       <h1 className={tituloPagina}>Logs</h1>
       <p className={descricaoPagina}>
         Registro das operações do worker. As mensagens já chegam sanitizadas:
@@ -79,7 +70,7 @@ export default async function LogsPage({
       <form
         method="get"
         action="/dashboard/logs"
-        className={`${modulo} mt-5 flex flex-wrap items-end gap-3 p-3`}
+        className="mt-6 flex flex-wrap items-end gap-3"
       >
         <label className={rotuloCampo}>
           Ação
@@ -110,54 +101,50 @@ export default async function LogsPage({
       </form>
 
       {(logs ?? []).length === 0 ? (
-        <p className="mt-8 text-sm text-fosforo-dim">Nenhum registro ainda.</p>
+        <div className={`${estadoVazio} mt-6`}>Nenhum registro ainda.</div>
       ) : (
         <div className={`${modulo} mt-4 overflow-x-auto`}>
           <table className="w-full text-sm">
             <thead className={cabecalhoTabela}>
               <tr>
-                <th className="px-3 py-2 font-medium">Quando</th>
-                <th className="px-3 py-2 font-medium">Ação</th>
-                <th className="px-3 py-2 font-medium">Desfecho</th>
-                <th className="px-3 py-2 font-medium">HTTP</th>
-                <th className="px-3 py-2 font-medium">Duração</th>
-                <th className="px-3 py-2 font-medium">Detalhe</th>
+                <th className="px-4 py-2.5 font-medium">Quando</th>
+                <th className="px-4 py-2.5 font-medium">Ação</th>
+                <th className="px-4 py-2.5 font-medium">Desfecho</th>
+                <th className="px-4 py-2.5 font-medium">HTTP</th>
+                <th className="px-4 py-2.5 font-medium">Duração</th>
+                <th className="px-4 py-2.5 font-medium">Detalhe</th>
               </tr>
             </thead>
             <tbody>
               {logs!.map((l) => (
                 <tr
                   key={l.id}
-                  className="border-b border-risco/60 transition-colors last:border-0 hover:bg-console-2/50"
+                  className="border-b border-white/5 transition-colors last:border-0 hover:bg-white/[0.03]"
                 >
-                  <td className="whitespace-nowrap px-3 py-2 font-mono text-[12px] tabular-nums text-fosforo-dim">
+                  <td className="whitespace-nowrap px-4 py-3 font-mono text-xs tabular-nums text-fraco">
                     {new Date(l.created_at).toLocaleString('pt-BR')}
                   </td>
-                  <td className="whitespace-nowrap px-3 py-2 text-fosforo">
+                  <td className="whitespace-nowrap px-4 py-3 text-claro">
                     {l.action === 'submit_post' ? 'Publicação' : 'Comentário'}
                   </td>
-                  <td className="whitespace-nowrap px-3 py-2">
-                    <span
-                      className={`inline-flex items-center gap-1.5 rounded-sm border px-1.5 py-0.5 font-display text-[11px] font-medium uppercase tracking-[0.08em] ${
-                        COR_OUTCOME[l.outcome] ?? ''
-                      }`}
-                    >
+                  <td className="whitespace-nowrap px-4 py-3">
+                    <span className="inline-flex items-center gap-1.5 rounded-md border border-traco bg-white/5 px-2 py-0.5 text-xs text-medio">
                       <span
                         aria-hidden
                         className={`size-1.5 rounded-full ${
-                          LAMPADA_OUTCOME[l.outcome] ?? 'bg-fosforo-dim'
+                          PONTO_OUTCOME[l.outcome] ?? 'bg-fraco'
                         }`}
                       />
                       {ROTULO_OUTCOME[l.outcome] ?? l.outcome}
                     </span>
                   </td>
-                  <td className="whitespace-nowrap px-3 py-2 font-mono text-[12px] tabular-nums text-fosforo-dim">
+                  <td className="whitespace-nowrap px-4 py-3 font-mono text-xs tabular-nums text-fraco">
                     {l.http_status ?? '—'}
                   </td>
-                  <td className="whitespace-nowrap px-3 py-2 font-mono text-[12px] tabular-nums text-fosforo-dim">
+                  <td className="whitespace-nowrap px-4 py-3 font-mono text-xs tabular-nums text-fraco">
                     {l.duration_ms != null ? `${l.duration_ms} ms` : '—'}
                   </td>
-                  <td className="max-w-md px-3 py-2 text-fosforo-dim">
+                  <td className="max-w-md px-4 py-3 text-medio">
                     {l.error_message ?? '—'}
                   </td>
                 </tr>

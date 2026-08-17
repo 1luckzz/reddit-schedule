@@ -4,11 +4,7 @@ import {
   HistoryTable,
   type HistoryRow,
 } from '@/components/history/history-table'
-import {
-  descricaoPagina,
-  plaqueta,
-  tituloPagina,
-} from '@/components/ui/estilo'
+import { descricaoPagina, tituloPagina } from '@/components/ui/estilo'
 import { HISTORY_STATUSES } from '@/lib/scheduling/status'
 import { SUPPORTED_TIME_ZONES } from '@/lib/scheduling/timezone'
 
@@ -85,8 +81,7 @@ export default async function HistoryPage({
   const { data: itens } = await consulta
 
   return (
-    <div>
-      <p className={plaqueta}>Registro de transmissões</p>
+    <div className="anima-entrada">
       <h1 className={tituloPagina}>Histórico</h1>
       <p className={descricaoPagina}>
         O que já foi concluído. A diferença entre o horário planejado e o real

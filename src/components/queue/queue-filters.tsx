@@ -1,6 +1,6 @@
 'use client'
 
-import { botaoPrimario, campo, modulo, rotuloCampo } from '@/components/ui/estilo'
+import { botaoPrimario, campo, rotuloCampo } from '@/components/ui/estilo'
 import { POST_STATUSES, rotuloStatus } from '@/lib/scheduling/status'
 import { SUPPORTED_TIME_ZONES } from '@/lib/scheduling/timezone'
 
@@ -39,7 +39,7 @@ export function QueueFilters({
     <form
       method="get"
       action={action}
-      className={`${modulo} mt-5 flex flex-wrap items-end gap-3 p-3`}
+      className="mt-6 flex flex-wrap items-end gap-3"
     >
       <label className={rotuloCampo}>
         Conta
@@ -121,7 +121,7 @@ export function QueueFilters({
       </button>
       <a
         href={action}
-        className="px-2 py-2 text-sm text-fosforo-dim underline transition-colors hover:text-fosforo"
+        className="px-2 py-2 text-sm text-fraco transition-colors duration-150 hover:text-claro"
       >
         Limpar
       </a>

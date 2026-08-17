@@ -7,10 +7,9 @@ import type { AuthState } from './schema'
 const initial: AuthState = { error: null }
 
 const inputClass =
-  'mt-1 w-full rounded-sm border border-risco bg-estudio px-3 py-2 text-sm text-fosforo transition-colors focus:border-ambar'
+  'mt-1.5 h-9 w-full rounded-lg border border-traco bg-superficie px-3 text-sm text-claro transition-colors placeholder:text-fraco focus:border-traco-forte'
 
-const labelClass =
-  'block font-display text-[11px] font-medium uppercase tracking-[0.12em] text-fosforo-dim'
+const labelClass = 'block text-[13px] font-medium text-medio'
 
 export default function LoginPage() {
   const [state, action, pending] = useActionState(signIn, initial)
@@ -22,19 +21,15 @@ export default function LoginPage() {
   const busy = pending || signUpPending
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-estudio p-6">
-      <div className="w-full max-w-sm rounded-md border border-risco bg-console p-8">
-        <div className="flex items-center gap-2">
-          <span aria-hidden className="size-2 rounded-full bg-ambar" />
-          <h1 className="font-display text-lg font-semibold uppercase tracking-[0.16em] text-fosforo">
-            Reddit Scheduler
-          </h1>
-        </div>
-        <p className="mt-1 text-sm text-fosforo-dim">
-          Entre para acessar o painel.
-        </p>
+    <main className="flex min-h-screen items-center justify-center bg-fundo p-6">
+      {/* Sem card: coluna estreita direto sobre o fundo. */}
+      <div className="anima-entrada w-full max-w-xs">
+        <h1 className="text-lg font-semibold tracking-[-0.01em] text-forte">
+          Reddit Scheduler
+        </h1>
+        <p className="mt-1 text-sm text-medio">Entre para acessar o painel.</p>
 
-        <form className="mt-6 space-y-4">
+        <form className="mt-8 space-y-4">
           <div>
             <label htmlFor="email" className={labelClass}>
               Email
@@ -64,23 +59,23 @@ export default function LoginPage() {
           </div>
 
           {error && (
-            <p role="alert" className="text-sm text-tijolo">
+            <p role="alert" className="text-sm text-rosa">
               {error}
             </p>
           )}
 
-          <div className="flex gap-2">
+          <div className="space-y-2 pt-2">
             <button
               formAction={action}
               disabled={busy}
-              className="flex-1 rounded-sm bg-ambar px-3 py-2 font-display text-sm font-semibold uppercase tracking-[0.08em] text-estudio transition-opacity hover:opacity-90 disabled:opacity-50"
+              className="w-full rounded-lg bg-forte px-3 py-2 text-sm font-medium text-fundo transition-[opacity,transform] duration-150 hover:opacity-90 active:scale-[0.98] disabled:opacity-50"
             >
               {pending ? 'Entrando…' : 'Entrar'}
             </button>
             <button
               formAction={signUpAction}
               disabled={busy}
-              className="rounded-sm border border-risco px-3 py-2 text-sm text-fosforo-dim transition-colors hover:bg-console-2 hover:text-fosforo disabled:opacity-50"
+              className="w-full rounded-lg border border-traco px-3 py-2 text-sm text-medio transition-colors duration-150 hover:border-traco-forte hover:text-claro active:scale-[0.98] disabled:opacity-50"
             >
               {signUpPending ? 'Criando…' : 'Criar conta'}
             </button>
