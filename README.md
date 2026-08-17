@@ -73,8 +73,21 @@ publica no Reddit e devolve o resultado. Sem ele nada é publicado.
 Localmente, com o Supabase no ar e o `.env.local` preenchido:
 
 ```bash
-npm run worker
+npm run worker:local
 ```
+
+**`npm run worker` recusa bancos de desenvolvimento de propósito.** O stack
+local é o mesmo que a suíte de testes usa: um worker apontado para ele
+reivindica os jobs dos testes e produz falhas intermitentes difíceis de
+rastrear — foi o que aconteceu aqui, com contêineres de verificação que
+continuaram rodando sem que ninguém percebesse.
+
+Rodar contra o banco local continua permitido; só precisa ser deliberado. A
+flag `--allow-local-db` fica visível a cada execução, e a variável
+`WORKER_ALLOW_LOCAL_DB=1` existe para o contêiner, que não recebe argumentos
+com a mesma facilidade. São reconhecidos como desenvolvimento os hosts em
+loopback, em faixa privada de IP, com sufixo `.local`/`.internal`, e os nomes
+que o Docker usa para alcançar a máquina (`host.docker.internal`).
 
 Em produção, com Docker:
 

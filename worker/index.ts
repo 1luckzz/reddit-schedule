@@ -7,6 +7,10 @@ import { getRedditEnv } from '@/lib/config/env'
 import { getBudgetWith } from '@/lib/reddit/budget-core'
 import { sanitize } from '@/lib/logging/sanitize'
 import { getWorkerConfig, type WorkerConfig } from '@/lib/worker/config'
+import {
+  assertBancoPermitido,
+  permissaoDeBancoLocal,
+} from '@/lib/worker/guard'
 import { runPost, type PostJob } from './post-runner'
 import { runComment, type CommentJob } from './comment-runner'
 
@@ -235,6 +239,19 @@ async function limparLogsAntigos() {
 
 async function main() {
   const config = getWorkerConfig()
+
+  // Barra a combinação acidental de worker com o banco da suíte de testes.
+  // Quatro contêineres esquecidos rodando contra o stack local já custaram
+  // horas de falhas intermitentes: eles reivindicavam os jobs dos testes.
+  try {
+    assertBancoPermitido(
+      process.env.NEXT_PUBLIC_SUPABASE_URL ?? '',
+      permissaoDeBancoLocal(),
+    )
+  } catch (e) {
+    console.error((e as Error).message)
+    process.exit(1)
+  }
 
   // Conferido uma vez, na subida, e não a cada ciclo: sem as credenciais do
   // Reddit o worker não tem o que fazer, e repetir o mesmo erro a cada 30
