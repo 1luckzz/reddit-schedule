@@ -3,6 +3,7 @@ import { workerServiceClient } from './supabase'
 import { getRedditClientFor } from '@/lib/reddit/client-core'
 import { submitComment } from '@/lib/reddit/comments'
 import { RedditError } from '@/lib/reddit/errors'
+import { sanitize } from '@/lib/logging/sanitize'
 import { loadAccountForWorker } from '@/lib/worker/load-account'
 import { logExecution } from '@/lib/worker/log'
 import { MAX_RETRIES, nextAttemptAt } from '@/lib/worker/retry'
@@ -57,11 +58,25 @@ export async function runComment(
       ...extra,
     })
 
+  /**
+   * Libera o lock e registra o desfecho.
+   *
+   * O erro é conferido pelo mesmo motivo do runner de publicação: o
+   * supabase-js devolve falhas em `error` em vez de lançar, e uma gravação
+   * silenciosamente perdida faria o runner relatar sucesso com o job preso
+   * em `processing`.
+   */
   const finalizar = async (patch: Record<string, unknown>) => {
-    await service
+    const { error } = await service
       .from('scheduled_comments')
       .update({ locked_at: null, locked_by: null, ...patch })
       .eq('id', job.id)
+    if (error) {
+      console.error(
+        `worker: falha ao gravar desfecho do comentário ${job.id}`,
+        sanitize(error.message),
+      )
+    }
   }
 
   try {

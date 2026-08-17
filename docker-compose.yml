@@ -1,0 +1,21 @@
+services:
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    restart: unless-stopped
+    env_file:
+      - .env.worker
+    environment:
+      # Identificação da instância nos logs e no campo locked_by. Duas
+      # instâncias com o mesmo WORKER_ID conseguiriam renovar o lock uma da
+      # outra — o heartbeat identifica o dono por este valor.
+      WORKER_ID: ${WORKER_ID:-vps-1}
+    # O worker não expõe porta: ele só consome fila e fala com o Reddit.
+    healthcheck:
+      test: ['CMD', 'node', '-e', 'process.exit(0)']
+      interval: 60s
+      timeout: 5s
+      retries: 3
+    # SIGTERM inicia o desligamento gracioso; a margem cobre o job em curso.
+    stop_grace_period: 120s

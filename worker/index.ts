@@ -114,9 +114,15 @@ export async function runCycle(
   }
 
   // --- 1: reaper antes de tudo ---
-  const { data: reaped } = await service.rpc('reap_stale_jobs', {
-    p_timeout_seconds: config.reaperTimeoutSeconds,
-  })
+  const { data: reaped, error: erroReaper } = await service.rpc(
+    'reap_stale_jobs',
+    { p_timeout_seconds: config.reaperTimeoutSeconds },
+  )
+  // Erro de banco precisa SUBIR, não virar ciclo vazio. O supabase-js devolve
+  // falhas em `error` em vez de lançar, e ignorá-lo faria um worker sem banco
+  // parecer um worker ocioso e saudável — o pior modo de falha possível para
+  // um agendador, porque nada é publicado e nada é reclamado.
+  if (erroReaper) throw new Error(`reap_stale_jobs falhou: ${erroReaper.message}`)
   relatorio.reaped = (reaped ?? []).length
 
   // --- 2: orçamento ANTES do claim ---
@@ -137,10 +143,11 @@ export async function runCycle(
   // Sequencial de propósito. Paralelizar publicações da mesma conta furaria o
   // espaçamento, e paralelizar contas diferentes multiplicaria o consumo de
   // orçamento sem ganho real: o gargalo é o rate limit do Reddit, não a CPU.
-  const { data: posts } = await service.rpc('claim_due_posts', {
-    p_worker_id: config.workerId,
-    p_batch: config.batchSize,
-  })
+  const { data: posts, error: erroPosts } = await service.rpc(
+    'claim_due_posts',
+    { p_worker_id: config.workerId, p_batch: config.batchSize },
+  )
+  if (erroPosts) throw new Error(`claim_due_posts falhou: ${erroPosts.message}`)
 
   const restantes = [...((posts ?? []) as PostJob[])]
   while (restantes.length > 0) {
@@ -177,10 +184,13 @@ export async function runCycle(
   if (relatorio.pausedForBudget) return relatorio
 
   // --- 4: comentários ---
-  const { data: comments } = await service.rpc('claim_due_comments', {
-    p_worker_id: config.workerId,
-    p_batch: config.batchSize,
-  })
+  const { data: comments, error: erroComments } = await service.rpc(
+    'claim_due_comments',
+    { p_worker_id: config.workerId, p_batch: config.batchSize },
+  )
+  if (erroComments) {
+    throw new Error(`claim_due_comments falhou: ${erroComments.message}`)
+  }
 
   const comRestantes = [...((comments ?? []) as CommentJob[])]
   while (comRestantes.length > 0) {

@@ -15,23 +15,33 @@ let userA: { id: string; accessToken: string }
 let cenario: Cenario
 let agent: MockAgent
 let hashOrcamento: string
+let clientId: string
 
 const reqPath = (p: string) => p.includes('post_requirements')
 const submitPath = (p: string) => p.startsWith('/api/submit')
 const pool = () => agent.get('https://oauth.reddit.com')
 
-const sucessoSubmit = {
-  json: {
-    errors: [],
-    data: { id: 'wc1', name: 't3_wc1', url: 'https://reddit.com/r/x/wc1/' },
-  },
+/**
+ * Cada submissão devolve um identificador diferente, como o Reddit faz.
+ *
+ * Reutilizar um id fixo colidiria com o índice único
+ * (reddit_account_id, reddit_post_id) — que existe justamente para impedir
+ * registrar a mesma publicação duas vezes na mesma conta.
+ */
+function sucessoSubmit() {
+  const id = `wc${Math.random().toString(36).slice(2, 10)}`
+  return {
+    json: {
+      errors: [],
+      data: { id, name: `t3_${id}`, url: `https://reddit.com/r/x/${id}/` },
+    },
+  }
 }
 
 beforeAll(async () => {
   await isolarOrcamento('wc')
-  hashOrcamento = createHash('sha256')
-    .update(process.env.REDDIT_CLIENT_ID!)
-    .digest('hex')
+  clientId = process.env.REDDIT_CLIENT_ID!
+  hashOrcamento = createHash('sha256').update(clientId).digest('hex')
 
   process.env.WORKER_ID = 'worker-ciclo'
   process.env.WORKER_INTERVAL_SECONDS = '5'
@@ -43,7 +53,28 @@ beforeAll(async () => {
 })
 
 beforeEach(async () => {
+  // Refixa o client_id a cada teste. `clientHash()` lê o ambiente na hora da
+  // chamada, e o processo do Vitest é compartilhado entre arquivos: um
+  // arquivo anterior que tenha mexido em REDDIT_CLIENT_ID faria o ciclo ler
+  // uma linha de orçamento diferente da que este teste pausa.
+  process.env.REDDIT_CLIENT_ID = clientId
+
+  // A fila do worker é global: `runCycle` reivindica TODA publicação vencida,
+  // não as de um dono. Um teste do ciclo precisa portanto controlar a fila
+  // inteira — restos de arquivos anteriores seriam processados junto e
+  // consumiriam os intercepts destinados aos jobs daqui.
+  //
+  // Apagar é seguro: os arquivos de teste removem seus usuários no `afterAll`,
+  // então o que sobra neste ponto é resíduo, não trabalho de alguém.
+  await adminClient()
+    .from('scheduled_posts')
+    .delete()
+    .in('status', ['scheduled', 'processing'])
   await adminClient().from('scheduled_posts').delete().eq('owner_id', userA.id)
+  await adminClient()
+    .from('scheduled_comments')
+    .delete()
+    .in('status', ['scheduled', 'processing'])
   await liberarOrcamento()
 })
 
@@ -102,7 +133,7 @@ describe('runCycle', () => {
     pool().intercept({ path: reqPath, method: 'GET' }).reply(200, {})
     pool()
       .intercept({ path: submitPath, method: 'POST' })
-      .reply(200, sucessoSubmit)
+      .reply(200, () => sucessoSubmit())
 
     const j = await jobNaFila()
     const r = await runCycle({ dispatcher: agent })
@@ -116,7 +147,7 @@ describe('runCycle', () => {
     pool().intercept({ path: reqPath, method: 'GET' }).reply(200, {})
     pool()
       .intercept({ path: submitPath, method: 'POST' })
-      .reply(200, sucessoSubmit)
+      .reply(200, () => sucessoSubmit())
 
     // Job que um worker anterior deixou preso, sem ter enviado nada.
     const j = await criarJob(cenario, {
@@ -128,9 +159,17 @@ describe('runCycle', () => {
 
     const r = await runCycle({ dispatcher: agent })
 
-    expect(r.reaped).toBeGreaterThan(0)
+    const depois = await lerJob(j.id)
+    const ctx = `relatorio=${JSON.stringify(r)} job=${JSON.stringify({
+      status: depois.status,
+      locked_by: depois.locked_by,
+      error_code: depois.error_code,
+      error_message: depois.error_message,
+      submit_attempted_at: depois.submit_attempted_at,
+    })}`
+    expect(r.reaped, ctx).toBeGreaterThan(0)
     // Se o claim viesse antes do reaper, o job ainda estaria em processing.
-    expect((await lerJob(j.id)).status).toBe('published')
+    expect(depois.status, ctx).toBe('published')
   })
 
   it('erro em um job não impede o processamento do próximo', async () => {
@@ -140,7 +179,7 @@ describe('runCycle', () => {
     pool().intercept({ path: submitPath, method: 'POST' }).reply(403, {})
     pool()
       .intercept({ path: submitPath, method: 'POST' })
-      .reply(200, sucessoSubmit)
+      .reply(200, () => sucessoSubmit())
 
     await jobNaFila({ scheduled_at: new Date(Date.now() - 7200_000).toISOString() })
     await jobNaFila({ scheduled_at: new Date(Date.now() - 60_000).toISOString() })
@@ -162,13 +201,22 @@ describe('o ciclo não segura jobs enquanto espera', () => {
     const b = await jobNaFila()
     await pausarOrcamento()
 
+    const { data: orcamento } = await adminClient()
+      .from('reddit_api_budget')
+      .select('*')
+      .eq('client_id_hash', hashOrcamento)
+      .maybeSingle()
+
     const r = await runCycle({ dispatcher: agent })
 
-    expect(r.pausedForBudget).toBe(true)
+    // O contexto vai na mensagem: uma falha intermitente aqui precisa dizer
+    // qual era o estado do orçamento, senão vira caça ao fantasma.
+    const ctx = `orcamento=${JSON.stringify(orcamento)} relatorio=${JSON.stringify(r)} cid=${process.env.REDDIT_CLIENT_ID}`
+    expect(r.pausedForBudget, ctx).toBe(true)
     for (const j of [a, b]) {
       const depois = await lerJob(j.id)
-      expect(depois.status).toBe('scheduled')
-      expect(depois.locked_by).toBeNull()
+      expect(depois.status, ctx).toBe('scheduled')
+      expect(depois.locked_by, ctx).toBeNull()
     }
   })
 
@@ -187,7 +235,7 @@ describe('o ciclo não segura jobs enquanto espera', () => {
       })
     pool()
       .intercept({ path: submitPath, method: 'POST' })
-      .reply(200, sucessoSubmit)
+      .reply(200, () => sucessoSubmit())
 
     const primeiro = await jobNaFila({
       scheduled_at: new Date(Date.now() - 7200_000).toISOString(),
@@ -238,7 +286,7 @@ describe('heartbeat: job demorado não é roubado', () => {
     pool()
       .intercept({ path: submitPath, method: 'POST' })
       // Cinco segundos: 2,5x o timeout do reaper.
-      .reply(200, sucessoSubmit)
+      .reply(200, () => sucessoSubmit())
       .delay(5000)
 
     const j = await jobNaFila()

@@ -5,6 +5,7 @@ import { getPostRequirements } from '@/lib/reddit/requirements'
 import { buildPayload, PayloadError } from '@/lib/scheduling/payload-builder'
 import { submitPost } from '@/lib/reddit/posts'
 import { RedditError } from '@/lib/reddit/errors'
+import { sanitize } from '@/lib/logging/sanitize'
 import { loadAccountForWorker } from '@/lib/worker/load-account'
 import { assertJobConsistency } from '@/lib/worker/consistency'
 import { logExecution } from '@/lib/worker/log'
@@ -74,12 +75,26 @@ export async function runPost(
       ...extra,
     })
 
-  /** Libera o lock e registra o desfecho. */
+  /**
+   * Libera o lock e registra o desfecho.
+   *
+   * O erro é conferido e registrado: o supabase-js devolve falhas em `error`
+   * em vez de lançar, e uma gravação de desfecho que falha em silêncio deixa
+   * o job preso em `processing` enquanto o runner relata sucesso. O reaper
+   * acabaria recuperando o job, mas o relato mentiroso já teria escondido a
+   * causa.
+   */
   const finalizar = async (patch: Record<string, unknown>) => {
-    await service
+    const { error } = await service
       .from('scheduled_posts')
       .update({ locked_at: null, locked_by: null, ...patch })
       .eq('id', job.id)
+    if (error) {
+      console.error(
+        `worker: falha ao gravar desfecho do post ${job.id}`,
+        sanitize(error.message),
+      )
+    }
   }
 
   try {

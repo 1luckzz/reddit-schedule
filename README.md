@@ -65,6 +65,64 @@ Gere a chave de criptografia com:
 node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 ```
 
+## Rodar o worker
+
+O worker é um processo separado do painel: ele reivindica publicações vencidas,
+publica no Reddit e devolve o resultado. Sem ele nada é publicado.
+
+Localmente, com o Supabase no ar e o `.env.local` preenchido:
+
+```bash
+npm run worker
+```
+
+Em produção, com Docker:
+
+```bash
+cp .env.example .env.worker    # e preencha; WORKER_ID único por máquina
+docker compose up -d --build
+docker compose logs -f worker
+```
+
+O que ele faz a cada ciclo, nesta ordem:
+
+1. **reaper** — devolve à fila o que uma instância anterior deixou preso;
+2. **orçamento** — se o limite do Reddit estourou, o ciclo termina aqui, **sem
+   reivindicar nada**;
+3. **publicações**, uma por vez;
+4. **comentários**, uma por vez;
+5. limpeza dos logs vencidos, uma vez por hora.
+
+A ordem entre 2 e 3 não é detalhe de implementação. Um worker jamais pode
+esperar orçamento segurando um job em `processing`: passado o timeout, o reaper
+de outra instância o recuperaria e dois workers publicariam o mesmo conteúdo.
+Verificar antes elimina a situação em vez de administrá-la. Para o caso
+irredutível — um único job que demora mais que o timeout — existe o heartbeat,
+que renova o lock enquanto o job está vivo.
+
+**Várias instâncias podem rodar ao mesmo tempo**, desde que cada uma tenha seu
+`WORKER_ID`. O claim usa `FOR UPDATE SKIP LOCKED`, então duas instâncias nunca
+processam o mesmo job simultaneamente. Duas instâncias com o mesmo `WORKER_ID`
+conseguiriam renovar o lock uma da outra — daí a exigência.
+
+`SIGTERM` inicia o desligamento gracioso: o worker para de pegar jobs novos e
+deixa o atual terminar. O `stop_grace_period` do compose dá margem para isso.
+
+### O que acontece quando algo dá errado
+
+| Situação | Desfecho |
+|---|---|
+| Reddit recusou (403, conteúdo rejeitado) | `failed`, sem retentar |
+| 429 ou rede antes do envio | volta à fila com backoff de 1/5/25 min |
+| 5xx ou conexão caída **depois** do envio | `needs_review`, **nunca** retentado |
+| Worker morreu antes de enviar | reaper devolve à fila |
+| Worker morreu depois de enviar | `needs_review` |
+
+A distinção entre as duas últimas linhas é o campo `submit_attempted_at`,
+gravado e commitado imediatamente antes da requisição de submissão. Um
+resultado desconhecido nunca vira nova tentativa automática: publicar duas
+vezes é pior que esperar uma decisão humana.
+
 ## Verificação
 
 ```bash
@@ -75,8 +133,13 @@ Os testes de integração exigem o stack local do Supabase no ar
 (`npx supabase start`). Para rodar apenas os testes que não tocam no banco:
 
 ```bash
-npm test -- --exclude "tests/db/**"
+npm test -- --project unit
 ```
+
+A suíte é dividida em dois projetos do Vitest. `unit` roda em paralelo; `db`
+roda **um arquivo por vez**, porque todos compartilham o mesmo Postgres, a
+fila do worker é global por natureza e alguns testes executam DDL que tranca
+a tabela inteira.
 
 `npm audit` cobre apenas vulnerabilidades já publicadas em advisory. É um piso
 de segurança, não prova de ausência de vulnerabilidades.
@@ -150,12 +213,40 @@ credenciais reais: a API do Reddit é simulada com `undici.MockAgent`.
 criptografia, sanitização de logs, OAuth do Reddit, gestão de contas,
 configuração de rede por conta, sincronização das comunidades moderadas,
 leitura de flairs e de requisitos de publicação, orçamento global de rate
-limit, e agendamento de publicações com comentário automático. Falta o
-Plano 5:
+limit, e agendamento de publicações com comentário automático.
+
+**Plano 5, bloco A concluído:** o worker publica de verdade — claim atômico,
+reaper, heartbeat de lock, submissão de publicação e de comentário, backoff, e
+empacotamento em Docker. Falta o bloco B:
 
 | Plano | Escopo |
 |---|---|
-| 5 | Worker de publicação, calendário, fila, histórico, revisão |
+| 5B | Reconciliação, Revisão, Fila, Histórico, Calendário, Dashboard |
+
+### Decisões do Plano 5 (bloco A)
+
+- **`safeToRetryEffect` é separado de `disposition`.** São perguntas
+  diferentes: `retryable` responde "vale a pena tentar de novo?", e
+  `safeToRetryEffect` responde "repetir a operação é seguro?". Só a segunda
+  autoriza limpar `submit_attempted_at` e devolver o job à fila. Amarrar isso
+  à `disposition` faria qualquer classificação futura como retentável virar,
+  sem que ninguém percebesse, permissão para republicar.
+- **O worker verifica o orçamento antes do claim, nunca depois.** Esperar o
+  reset segurando um job em `processing` deixaria o reaper de outra instância
+  recuperá-lo, e dois workers publicariam o mesmo conteúdo. Para o caso
+  irredutível — um job que sozinho demora mais que o timeout — existe o
+  heartbeat, que renova o lock enquanto o job está vivo.
+- **A chave secreta é lida em exatamente três arquivos.** O módulo
+  compartilhado é uma factory pura que recebe URL e chave por parâmetro;
+  `admin.ts` (marcado `server-only`) e `worker/supabase.ts` (fora da árvore do
+  Next) são os únicos que leem o ambiente. Um teste percorre o grafo de
+  imports de cada arquivo `'use client'` para provar que nenhum os alcança.
+- **Conexão derrubada depois do POST tem teste determinístico local**, com um
+  servidor que lê o corpo inteiro e só então destrói o socket. Provocar isso
+  contra a API real seria publicar de verdade para testar.
+- **Erro de banco no worker precisa gritar.** O `supabase-js` devolve falhas em
+  `error` em vez de lançar; ignorá-las fazia um worker sem banco parecer um
+  worker ocioso e saudável — o pior modo de falha para um agendador.
 
 ### Decisões do Plano 4
 

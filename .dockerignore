@@ -1,0 +1,12 @@
+node_modules
+.next
+.git
+.githooks
+docs
+tests
+supabase
+scripts
+.env
+.env.local
+.env.worker
+*.md

@@ -19,7 +19,7 @@ npm run verify:fast
 
 if node -e "fetch('http://127.0.0.1:54321/rest/v1/', { signal: AbortSignal.timeout(2000) }).then(() => process.exit(0)).catch(() => process.exit(1))" 2>/dev/null; then
   echo "[pre-commit] Supabase local no ar: rodando testes de banco..."
-  npx vitest run tests/db
+  npx vitest run --project db
 else
   echo "[pre-commit] Supabase local ausente — testes de banco pulados."
   echo "[pre-commit] Antes de fechar uma etapa: npx supabase start && npm run verify"

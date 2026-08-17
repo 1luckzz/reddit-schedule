@@ -35,7 +35,6 @@ const claim = (workerId: string, batch = 10) =>
   })
 
 beforeAll(async () => {
-  // A fila é global: sem isto, os arquivos que reivindicam jobs pegam as
   const stamp = Date.now()
   userA = await createTestUser(`cl-${stamp}@teste.local`)
 
@@ -67,7 +66,20 @@ beforeAll(async () => {
 })
 
 beforeEach(async () => {
-  // Cada teste começa sem jobs pendentes.
+  // A fila do worker é global: `claim_due_posts` e `reap_stale_jobs` varrem
+  // TODAS as linhas, não as de um dono. Um teste que afirma contagens exatas
+  // precisa portanto controlar a fila inteira.
+  //
+  // Apagar é seguro: cada arquivo remove seus usuários no `afterAll`, então o
+  // que sobra neste ponto é resíduo, não trabalho de alguém.
+  await adminClient()
+    .from('scheduled_comments')
+    .delete()
+    .in('status', ['scheduled', 'processing'])
+  await adminClient()
+    .from('scheduled_posts')
+    .delete()
+    .in('status', ['scheduled', 'processing'])
   await adminClient().from('scheduled_posts').delete().eq('owner_id', userA.id)
   await adminClient()
     .from('reddit_accounts')

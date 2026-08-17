@@ -1,0 +1,23 @@
+FROM node:24-alpine AS deps
+WORKDIR /app
+COPY package.json package-lock.json ./
+# `ci` garante exatamente o lockfile. O worker não usa nada do Next em
+# runtime, mas precisa do tsx para executar TypeScript sem passo de build —
+# e do tsx vem também a resolução dos paths `@/` do tsconfig.
+RUN npm ci
+
+FROM node:24-alpine
+WORKDIR /app
+ENV NODE_ENV=production
+
+COPY --from=deps /app/node_modules ./node_modules
+COPY package.json tsconfig.json ./
+COPY src/lib ./src/lib
+COPY worker ./worker
+
+# Não roda como root.
+USER node
+
+# O binário direto, e não `npx`: evita a resolução de pacote a cada arranque e
+# o ruído de aviso do npm nos logs do contêiner.
+CMD ["node_modules/.bin/tsx", "worker/index.ts"]
