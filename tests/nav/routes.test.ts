@@ -50,19 +50,25 @@ describe('rotas geradas', () => {
     expect(rotas).toContain(destino)
   })
 
-  it('todo item de navegação já implementado aponta para rota existente', async () => {
+  it('TODO item de navegação aponta para uma rota existente', async () => {
     const { NAV_ITEMS } = await import('@/components/nav/nav-items')
-    // As demais páginas chegam no Plano 5.
-    const implementadas = [
-      '/dashboard',
-      '/dashboard/accounts',
-      '/dashboard/communities',
-      '/dashboard/new',
-    ]
+    // Desde o Plano 5 não há mais item pendente: um link de menu que leva a
+    // 404 é pior que menu nenhum.
+    for (const item of NAV_ITEMS) {
+      expect(rotas, item.href).toContain(item.href)
+    }
+  })
 
-    for (const href of implementadas) {
-      expect(NAV_ITEMS.map((i) => i.href)).toContain(href)
-      expect(rotas).toContain(href)
+  it('as páginas do Plano 5 respondem nos caminhos esperados', () => {
+    for (const rota of [
+      '/dashboard/review',
+      '/dashboard/queue',
+      '/dashboard/history',
+      '/dashboard/calendar',
+      '/dashboard/logs',
+      '/dashboard/settings',
+    ]) {
+      expect(rotas, rota).toContain(rota)
     }
   })
 })

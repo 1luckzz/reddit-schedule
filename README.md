@@ -228,13 +228,35 @@ configuração de rede por conta, sincronização das comunidades moderadas,
 leitura de flairs e de requisitos de publicação, orçamento global de rate
 limit, e agendamento de publicações com comentário automático.
 
-**Plano 5, bloco A concluído:** o worker publica de verdade — claim atômico,
-reaper, heartbeat de lock, submissão de publicação e de comentário, backoff, e
-empacotamento em Docker. Falta o bloco B:
+**Planos 1 a 5 concluídos.** O sistema está completo: conectar contas,
+sincronizar comunidades, agendar publicações com comentário automático,
+publicar no horário marcado, e acompanhar tudo pelo painel — calendário, fila,
+histórico, logs e revisão manual do que ficou ambíguo.
 
-| Plano | Escopo |
-|---|---|
-| 5B | Reconciliação, Revisão, Fila, Histórico, Calendário, Dashboard |
+### Decisões do Plano 5 (bloco B)
+
+- **A reconciliação lê, nunca decide.** Ela consulta as publicações da conta no
+  Reddit e mostra as compatíveis; quem confirma o vínculo é você. Quando há
+  mais de uma candidata, a tela destaca a ambiguidade em vez de escolher —
+  duas compatíveis significam publicação duplicada ou homônimos, e nenhum dos
+  dois casos se resolve por heurística.
+- **Indisponibilidade nunca vira "não encontrei".** Um 5xx ao consultar sobe
+  como erro; confundi-lo com lista vazia faria você marcar como falho algo que
+  está publicado.
+- **`resolve_needs_review` é o único caminho de saída da revisão**, e não
+  republica nada. Ela exige o identificador para marcar como publicada, grava
+  `resolved_by` e `resolved_at`, e cancela os comentários pendentes quando o
+  desfecho é falha — sem publicação não há onde comentar.
+- **Nenhuma página usa o client administrativo.** Todas leem com o client do
+  usuário e deixam a RLS restringir; nenhuma filtra por `owner_id` à mão, o que
+  daria aparência de segurança e esconderia uma policy afrouxada por engano.
+  Um teste A/B com dois usuários reais prova a consequência em cada consulta.
+- **O calendário agrupa no fuso do usuário, não no do servidor.** Uma
+  publicação às 22h em São Paulo é 01h do dia seguinte em UTC, e agrupar por
+  UTC a colocaria na célula errada — um erro silencioso.
+- **O painel distingue worker parado de worker ocioso.** Silêncio não é falha:
+  sem nada agendado o worker não registra nada. O sinal confiável é outro —
+  publicações que já venceram e continuam na fila deveriam ter saído.
 
 ### Decisões do Plano 5 (bloco A)
 
