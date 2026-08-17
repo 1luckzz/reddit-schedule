@@ -8,14 +8,16 @@ export function Sidebar({ email }: { email: string }) {
   const pathname = usePathname()
 
   return (
-    <aside className="flex w-60 shrink-0 flex-col border-r border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
-      <div className="px-4 py-5">
-        <span className="text-sm font-semibold text-neutral-900 dark:text-neutral-50">
+    <aside className="flex w-60 shrink-0 flex-col border-r border-risco bg-console">
+      <div className="flex items-center gap-2 border-b border-risco px-4 py-5">
+        {/* A lâmpada de energia do console. */}
+        <span aria-hidden className="size-2 rounded-full bg-ambar" />
+        <span className="font-display text-sm font-semibold uppercase tracking-[0.18em] text-fosforo">
           Reddit Scheduler
         </span>
       </div>
 
-      <nav className="flex-1 space-y-0.5 px-2">
+      <nav className="flex-1 space-y-px px-2 py-3">
         {NAV_ITEMS.map(({ href, label, icon: Icon }) => {
           const active =
             href === '/dashboard' ? pathname === href : pathname.startsWith(href)
@@ -24,25 +26,31 @@ export function Sidebar({ email }: { email: string }) {
               key={href}
               href={href}
               aria-current={active ? 'page' : undefined}
-              className={`flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm transition-colors ${
+              className={`flex items-center gap-2.5 border-l-2 px-2.5 py-2 font-display text-[13px] font-medium uppercase tracking-[0.1em] transition-colors ${
                 active
-                  ? 'bg-neutral-100 font-medium text-neutral-900 dark:bg-neutral-800 dark:text-neutral-50'
-                  : 'text-neutral-600 hover:bg-neutral-50 dark:text-neutral-400 dark:hover:bg-neutral-800/50'
+                  ? 'border-ambar bg-console-2 text-fosforo'
+                  : 'border-transparent text-fosforo-dim hover:bg-console-2/60 hover:text-fosforo'
               }`}
             >
-              <Icon className="size-4" aria-hidden />
+              <Icon
+                className={`size-4 ${active ? 'text-ambar' : 'text-fosforo-dim/70'}`}
+                aria-hidden
+              />
               {label}
             </Link>
           )
         })}
       </nav>
 
-      <div className="border-t border-neutral-200 p-3 dark:border-neutral-800">
-        <p className="truncate px-1 text-xs text-neutral-500" title={email}>
+      <div className="border-t border-risco p-3">
+        <p
+          className="truncate px-1 font-mono text-[11px] text-fosforo-dim"
+          title={email}
+        >
           {email}
         </p>
         <form action="/auth/signout" method="post">
-          <button className="mt-2 w-full rounded-md border border-neutral-300 px-2 py-1.5 text-xs text-neutral-700 transition-colors hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800">
+          <button className="mt-2 w-full rounded-sm border border-risco px-2 py-1.5 font-display text-[11px] font-medium uppercase tracking-[0.12em] text-fosforo-dim transition-colors hover:bg-console-2 hover:text-fosforo">
             Sair
           </button>
         </form>

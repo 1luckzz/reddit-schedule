@@ -1,5 +1,10 @@
 import { createServerSupabase } from '@/lib/supabase/server'
 import { MonthGrid, type CalendarPost } from '@/components/calendar/month-grid'
+import {
+  descricaoPagina,
+  plaqueta,
+  tituloPagina,
+} from '@/components/ui/estilo'
 import { buildMonthGrid, groupByDay } from '@/lib/scheduling/calendar'
 import { SUPPORTED_TIME_ZONES } from '@/lib/scheduling/timezone'
 
@@ -53,10 +58,9 @@ export default async function CalendarPage({
 
   return (
     <div>
-      <h1 className="text-xl font-semibold text-neutral-900 dark:text-neutral-50">
-        Calendário
-      </h1>
-      <p className="mt-1 text-sm text-neutral-500">
+      <p className={plaqueta}>Grade de programação</p>
+      <h1 className={tituloPagina}>Calendário</h1>
+      <p className={descricaoPagina}>
         Publicações agrupadas por dia no fuso escolhido.
       </p>
 

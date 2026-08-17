@@ -1,5 +1,6 @@
 'use client'
 
+import { botaoPrimario, campo, modulo, rotuloCampo } from '@/components/ui/estilo'
 import { POST_STATUSES, rotuloStatus } from '@/lib/scheduling/status'
 import { SUPPORTED_TIME_ZONES } from '@/lib/scheduling/timezone'
 
@@ -34,16 +35,13 @@ export function QueueFilters({
   action?: string
   statusDisponiveis?: readonly string[]
 }) {
-  const campo =
-    'rounded-md border border-neutral-300 bg-white px-2 py-1.5 text-sm text-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100'
-
   return (
     <form
       method="get"
       action={action}
-      className="mt-5 flex flex-wrap items-end gap-3 rounded-lg border border-neutral-200 bg-white p-3 dark:border-neutral-800 dark:bg-neutral-900"
+      className={`${modulo} mt-5 flex flex-wrap items-end gap-3 p-3`}
     >
-      <label className="flex flex-col gap-1 text-xs text-neutral-600 dark:text-neutral-400">
+      <label className={rotuloCampo}>
         Conta
         <select name="account" defaultValue={atual.account ?? ''} className={campo}>
           <option value="">Todas</option>
@@ -55,7 +53,7 @@ export function QueueFilters({
         </select>
       </label>
 
-      <label className="flex flex-col gap-1 text-xs text-neutral-600 dark:text-neutral-400">
+      <label className={rotuloCampo}>
         Comunidade
         <select
           name="community"
@@ -71,7 +69,7 @@ export function QueueFilters({
         </select>
       </label>
 
-      <label className="flex flex-col gap-1 text-xs text-neutral-600 dark:text-neutral-400">
+      <label className={rotuloCampo}>
         Situação
         <select name="status" defaultValue={atual.status ?? ''} className={campo}>
           <option value="">Todas</option>
@@ -83,7 +81,7 @@ export function QueueFilters({
         </select>
       </label>
 
-      <label className="flex flex-col gap-1 text-xs text-neutral-600 dark:text-neutral-400">
+      <label className={rotuloCampo}>
         De
         <input
           type="date"
@@ -93,7 +91,7 @@ export function QueueFilters({
         />
       </label>
 
-      <label className="flex flex-col gap-1 text-xs text-neutral-600 dark:text-neutral-400">
+      <label className={rotuloCampo}>
         Até
         <input
           type="date"
@@ -103,7 +101,7 @@ export function QueueFilters({
         />
       </label>
 
-      <label className="flex flex-col gap-1 text-xs text-neutral-600 dark:text-neutral-400">
+      <label className={rotuloCampo}>
         Fuso de exibição
         <select
           name="tz"
@@ -118,15 +116,12 @@ export function QueueFilters({
         </select>
       </label>
 
-      <button
-        type="submit"
-        className="rounded-md bg-neutral-900 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-neutral-800 dark:bg-neutral-50 dark:text-neutral-900 dark:hover:bg-neutral-200"
-      >
+      <button type="submit" className={botaoPrimario}>
         Filtrar
       </button>
       <a
         href={action}
-        className="px-2 py-2 text-sm text-neutral-600 underline dark:text-neutral-400"
+        className="px-2 py-2 text-sm text-fosforo-dim underline transition-colors hover:text-fosforo"
       >
         Limpar
       </a>

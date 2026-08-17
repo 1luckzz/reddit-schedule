@@ -1,4 +1,5 @@
-import { corStatus, rotuloStatus } from '@/lib/scheduling/status'
+import { StatusChip } from '@/components/ui/status-chip'
+import { cabecalhoTabela, modulo } from '@/components/ui/estilo'
 import { fromUtc } from '@/lib/scheduling/timezone'
 
 export type HistoryRow = {
@@ -33,7 +34,7 @@ export function HistoryTable({
 }) {
   if (itens.length === 0) {
     return (
-      <p className="mt-8 text-sm text-neutral-500">
+      <p className="mt-8 text-sm text-fosforo-dim">
         Nenhuma publicação concluída corresponde a estes filtros.
       </p>
     )
@@ -46,9 +47,9 @@ export function HistoryTable({
   }
 
   return (
-    <div className="mt-4 overflow-x-auto rounded-lg border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
+    <div className={`${modulo} mt-4 overflow-x-auto`}>
       <table className="w-full text-sm">
-        <thead className="border-b border-neutral-200 text-left text-xs text-neutral-500 dark:border-neutral-800">
+        <thead className={cabecalhoTabela}>
           <tr>
             <th className="px-3 py-2 font-medium">Planejado</th>
             <th className="px-3 py-2 font-medium">Real</th>
@@ -62,46 +63,47 @@ export function HistoryTable({
           {itens.map((item) => (
             <tr
               key={item.id}
-              className="border-b border-neutral-100 last:border-0 align-top dark:border-neutral-800/60"
+              className="border-b border-risco/60 align-top transition-colors last:border-0 hover:bg-console-2/50"
             >
-              <td className="whitespace-nowrap px-3 py-2 text-neutral-600 dark:text-neutral-400">
+              {/*
+                Planejado apagado, Real aceso: a diferença entre os dois é a
+                informação de operação — atraso de fila, retentativa, resolução
+                manual — e o olho compara as duas colunas mono em sequência.
+              */}
+              <td className="whitespace-nowrap px-3 py-2 font-mono text-[12px] tabular-nums text-fosforo-dim">
                 {local(item.scheduled_at)}
               </td>
-              <td className="whitespace-nowrap px-3 py-2 text-neutral-700 dark:text-neutral-300">
+              <td className="whitespace-nowrap px-3 py-2 font-mono text-[12px] tabular-nums text-fosforo">
                 {local(item.published_at) ?? '—'}
               </td>
-              <td className="whitespace-nowrap px-3 py-2 text-neutral-600 dark:text-neutral-400">
+              <td className="whitespace-nowrap px-3 py-2 text-xs text-fosforo-dim">
                 u/{item.reddit_accounts?.username ?? '—'} → r/
                 {item.subreddits?.name ?? '—'}
               </td>
-              <td className="max-w-xs px-3 py-2 text-neutral-900 dark:text-neutral-50">
+              <td className="max-w-xs px-3 py-2 text-fosforo">
                 <span className="block truncate">{item.title}</span>
                 {/*
                   A mensagem já vem em português e sem jargão: é a `userMessage`
                   do erro classificado, não o código interno.
                 */}
                 {item.error_message && (
-                  <span className="mt-0.5 block text-xs text-red-600 dark:text-red-400">
+                  <span className="mt-0.5 block text-xs text-tijolo">
                     {item.error_message}
                   </span>
                 )}
               </td>
               <td className="whitespace-nowrap px-3 py-2">
-                <span
-                  className={`rounded px-1.5 py-0.5 text-xs ${corStatus(item.status)}`}
-                >
-                  {rotuloStatus(item.status)}
-                </span>
+                <StatusChip status={item.status} />
                 {item.resolved_at && (
                   <span
-                    className="ml-1.5 text-xs text-neutral-500"
+                    className="ml-1.5 text-xs text-fosforo-dim"
                     title={`Decisão registrada em ${local(item.resolved_at)}`}
                   >
                     resolvido manualmente
                   </span>
                 )}
                 {item.retry_count > 0 && (
-                  <span className="ml-1.5 text-xs text-neutral-500">
+                  <span className="ml-1.5 font-mono text-[11px] text-fosforo-dim">
                     {item.retry_count} tentativa(s)
                   </span>
                 )}
@@ -112,12 +114,12 @@ export function HistoryTable({
                     href={item.reddit_permalink}
                     target="_blank"
                     rel="noreferrer noopener"
-                    className="text-xs text-blue-600 underline dark:text-blue-400"
+                    className="text-xs text-ambar underline transition-colors hover:text-fosforo"
                   >
                     Abrir no Reddit
                   </a>
                 ) : (
-                  <span className="text-xs text-neutral-400">
+                  <span className="font-mono text-[11px] text-fosforo-dim/60">
                     {item.reddit_post_id ?? '—'}
                   </span>
                 )}

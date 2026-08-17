@@ -4,6 +4,11 @@ import {
   HistoryTable,
   type HistoryRow,
 } from '@/components/history/history-table'
+import {
+  descricaoPagina,
+  plaqueta,
+  tituloPagina,
+} from '@/components/ui/estilo'
 import { HISTORY_STATUSES } from '@/lib/scheduling/status'
 import { SUPPORTED_TIME_ZONES } from '@/lib/scheduling/timezone'
 
@@ -81,10 +86,9 @@ export default async function HistoryPage({
 
   return (
     <div>
-      <h1 className="text-xl font-semibold text-neutral-900 dark:text-neutral-50">
-        Histórico
-      </h1>
-      <p className="mt-1 text-sm text-neutral-500">
+      <p className={plaqueta}>Registro de transmissões</p>
+      <h1 className={tituloPagina}>Histórico</h1>
+      <p className={descricaoPagina}>
         O que já foi concluído. A diferença entre o horário planejado e o real
         revela atraso de fila, retentativa ou resolução manual.
       </p>

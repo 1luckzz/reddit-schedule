@@ -38,19 +38,18 @@ const ROTULOS: Record<PostStatus, string> = {
   needs_review: 'Aguardando revisão',
 }
 
+// A linguagem de lâmpadas da sala de transmissão: texto na cor do estado,
+// fundo tingido de leve e borda hairline na mesma cor. `processing` é o
+// vermelho NO AR — vivo, não erro; `failed` usa o tijolo fosco de propósito,
+// para nunca disputar com a lâmpada ao vivo.
 const CORES: Record<PostStatus, string> = {
-  draft:
-    'bg-neutral-100 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300',
-  scheduled: 'bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300',
-  processing:
-    'bg-indigo-100 text-indigo-800 dark:bg-indigo-950 dark:text-indigo-300',
-  published:
-    'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300',
-  failed: 'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300',
-  cancelled:
-    'bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400',
-  needs_review:
-    'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300',
+  draft: 'text-fosforo-dim border-fosforo-dim/30 bg-fosforo-dim/10',
+  scheduled: 'text-standby border-standby/30 bg-standby/10',
+  processing: 'text-noar border-noar/40 bg-noar/10',
+  published: 'text-ok border-ok/30 bg-ok/10',
+  failed: 'text-tijolo border-tijolo/35 bg-tijolo/10',
+  cancelled: 'text-fosforo-dim/70 border-fosforo-dim/20 bg-transparent',
+  needs_review: 'text-ambar border-ambar/35 bg-ambar/10',
 }
 
 export function rotuloStatus(status: string): string {

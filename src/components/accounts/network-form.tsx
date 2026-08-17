@@ -16,10 +16,10 @@ import {
 const initial: ActionState = { error: null, ok: false }
 
 const field =
-  'mt-1 w-full rounded-md border border-neutral-300 px-2 py-1.5 text-sm outline-none focus:border-neutral-900 dark:border-neutral-700 dark:bg-neutral-950 dark:focus:border-neutral-100'
+  'mt-1 w-full rounded-sm border border-risco bg-estudio px-2 py-1.5 text-sm text-fosforo transition-colors focus:border-ambar'
 
 const smallButton =
-  'rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-700 disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-300'
+  'rounded-sm border border-risco px-2 py-1 text-xs text-fosforo-dim transition-colors hover:bg-console-2 hover:text-fosforo disabled:opacity-50'
 
 export function NetworkForm({
   accountId,
@@ -80,7 +80,7 @@ export function NetworkForm({
           <input type="hidden" name="accountId" value={accountId} />
           <button
             disabled={disconnecting}
-            className="rounded-md border border-red-300 px-2 py-1 text-xs text-red-700 disabled:opacity-50 dark:border-red-900 dark:text-red-400"
+            className="rounded-sm border border-tijolo/50 px-2 py-1 text-xs text-tijolo transition-colors hover:bg-tijolo/10 disabled:opacity-50"
           >
             Desconectar conta
           </button>
@@ -91,7 +91,7 @@ export function NetworkForm({
         <form action={action} className="mt-3 grid gap-3 sm:grid-cols-2">
           <input type="hidden" name="accountId" value={accountId} />
 
-          <label className="text-xs text-neutral-600 dark:text-neutral-400">
+          <label className="text-xs text-fosforo-dim">
             Protocolo
             <select name="protocol" className={field} defaultValue="http">
               {SUPPORTED_PROXY_PROTOCOLS.map((p) => (
@@ -103,12 +103,12 @@ export function NetworkForm({
             </select>
           </label>
 
-          <label className="text-xs text-neutral-600 dark:text-neutral-400">
+          <label className="text-xs text-fosforo-dim">
             Host
             <input name="host" required className={field} />
           </label>
 
-          <label className="text-xs text-neutral-600 dark:text-neutral-400">
+          <label className="text-xs text-fosforo-dim">
             Porta
             <input
               name="port"
@@ -120,12 +120,12 @@ export function NetworkForm({
             />
           </label>
 
-          <label className="text-xs text-neutral-600 dark:text-neutral-400">
+          <label className="text-xs text-fosforo-dim">
             Usuário (opcional)
             <input name="username" autoComplete="off" className={field} />
           </label>
 
-          <label className="text-xs text-neutral-600 dark:text-neutral-400 sm:col-span-2">
+          <label className="text-xs text-fosforo-dim sm:col-span-2">
             Senha (opcional)
             {/* Nasce sempre vazio: a senha nunca volta do servidor. */}
             <input
@@ -134,19 +134,19 @@ export function NetworkForm({
               autoComplete="new-password"
               className={field}
             />
-            <span className="mt-1 block text-[11px] text-neutral-500">
+            <span className="mt-1 block text-[11px] text-fosforo-dim/80">
               Deixe em branco para manter a senha atual. Para apagá-la, use
               &quot;Remover credenciais&quot;.
             </span>
           </label>
 
           {state.error && (
-            <p role="alert" className="text-xs text-red-600 sm:col-span-2">
+            <p role="alert" className="text-xs text-tijolo sm:col-span-2">
               {state.error}
             </p>
           )}
 
-          <p className="text-[11px] text-neutral-500 sm:col-span-2">
+          <p className="text-[11px] text-fosforo-dim/80 sm:col-span-2">
             A rota é fixa para esta conta enquanto estiver habilitada. Não há
             rotação nem troca de rota após erro.
           </p>
@@ -154,7 +154,7 @@ export function NetworkForm({
           <div className="sm:col-span-2">
             <button
               disabled={pending}
-              className="rounded-md bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
+              className="rounded-sm bg-ambar px-3 py-1.5 font-display text-xs font-semibold uppercase tracking-[0.08em] text-estudio transition-opacity hover:opacity-90 disabled:opacity-50"
             >
               {pending ? 'Salvando…' : 'Salvar configuração de rede'}
             </button>

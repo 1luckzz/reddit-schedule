@@ -7,11 +7,19 @@ const STATUS_LABEL: Record<string, string> = {
   revoked: 'Revogada',
 }
 
+// A mesma linguagem de lâmpada do resto do console.
 const STATUS_CLASS: Record<string, string> = {
-  connected: 'bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300',
-  expired: 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300',
-  disconnected: 'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300',
-  revoked: 'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300',
+  connected: 'text-ok border-ok/30 bg-ok/10',
+  expired: 'text-ambar border-ambar/35 bg-ambar/10',
+  disconnected: 'text-tijolo border-tijolo/35 bg-tijolo/10',
+  revoked: 'text-tijolo border-tijolo/35 bg-tijolo/10',
+}
+
+const STATUS_LAMPADA: Record<string, string> = {
+  connected: 'bg-ok',
+  expired: 'bg-ambar',
+  disconnected: 'bg-tijolo',
+  revoked: 'bg-tijolo',
 }
 
 export type AccountRow = {
@@ -38,13 +46,11 @@ export function AccountCard({
   network: NetworkRow | null
 }) {
   return (
-    <div className="rounded-lg border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+    <div className="rounded-md border border-risco bg-console p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <p className="font-medium text-neutral-900 dark:text-neutral-50">
-            u/{account.username}
-          </p>
-          <p className="mt-0.5 text-xs text-neutral-500">
+          <p className="font-medium text-fosforo">u/{account.username}</p>
+          <p className="mt-0.5 text-xs text-fosforo-dim">
             {account.last_authenticated_at
               ? `Autorizada em ${new Date(
                   account.last_authenticated_at,
@@ -54,26 +60,32 @@ export function AccountCard({
         </div>
 
         <span
-          className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+          className={`inline-flex items-center gap-1.5 rounded-sm border px-1.5 py-0.5 font-display text-[11px] font-medium uppercase tracking-[0.08em] ${
             STATUS_CLASS[account.status] ?? STATUS_CLASS.disconnected
           }`}
         >
+          <span
+            aria-hidden
+            className={`size-1.5 rounded-full ${
+              STATUS_LAMPADA[account.status] ?? 'bg-tijolo'
+            }`}
+          />
           {STATUS_LABEL[account.status] ?? account.status}
         </span>
       </div>
 
       {account.status !== 'connected' && (
-        <p className="mt-3 text-sm text-neutral-600 dark:text-neutral-400">
+        <p className="mt-3 text-sm text-fosforo-dim">
           Esta conta precisa ser reconectada para voltar a publicar.
         </p>
       )}
 
-      <p className="mt-3 text-xs text-neutral-500">
+      <p className="mt-3 font-mono text-[11px] text-fosforo-dim">
         Permissões: {account.scopes.join(', ')}
       </p>
 
-      <div className="mt-3 border-t border-neutral-200 pt-3 dark:border-neutral-800">
-        <p className="text-xs text-neutral-500">
+      <div className="mt-3 border-t border-risco pt-3">
+        <p className="font-mono text-[11px] text-fosforo-dim">
           {network?.proxy_enabled
             ? `Rede: ${network.proxy_protocol}://${network.proxy_host_masked}:${network.proxy_port}`
             : 'Rede: conexão direta'}

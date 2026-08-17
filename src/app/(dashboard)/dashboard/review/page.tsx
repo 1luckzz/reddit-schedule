@@ -1,5 +1,10 @@
 import { createServerSupabase } from '@/lib/supabase/server'
 import { ReviewCard, type ReviewRow } from '@/components/review/review-card'
+import {
+  descricaoPagina,
+  plaqueta,
+  tituloPagina,
+} from '@/components/ui/estilo'
 
 export default async function ReviewPage() {
   const supabase = await createServerSupabase()
@@ -20,16 +25,15 @@ export default async function ReviewPage() {
 
   return (
     <div className="max-w-3xl">
-      <h1 className="text-xl font-semibold text-neutral-900 dark:text-neutral-50">
-        Revisão
-      </h1>
-      <p className="mt-1 text-sm text-neutral-500">
+      <p className={plaqueta}>Mesa de incidentes</p>
+      <h1 className={tituloPagina}>Revisão</h1>
+      <p className={descricaoPagina}>
         Publicações cujo resultado não pôde ser confirmado. O sistema não tenta
         de novo sozinho, porque isso poderia publicar duas vezes.
       </p>
 
       {lista.length === 0 ? (
-        <p className="mt-8 text-sm text-neutral-500">Nada aguardando revisão.</p>
+        <p className="mt-8 text-sm text-fosforo-dim">Nada aguardando revisão.</p>
       ) : (
         <ul className="mt-6 space-y-3">
           {lista.map((item) => (

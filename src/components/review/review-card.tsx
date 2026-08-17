@@ -6,6 +6,7 @@ import {
   resolveReview,
   type ReviewState,
 } from '@/app/(dashboard)/dashboard/review/actions'
+import { botaoFantasma } from '@/components/ui/estilo'
 
 export type ReviewRow = {
   id: string
@@ -59,20 +60,27 @@ export function ReviewCard({ item }: { item: ReviewRow }) {
     consulta.postId === item.id ? (consulta.candidates ?? null) : null
 
   return (
-    <article className="rounded-lg border border-amber-200 bg-amber-50/40 p-4 dark:border-amber-900/50 dark:bg-amber-950/20">
-      <header>
-        <h2 className="font-medium text-neutral-900 dark:text-neutral-50">
-          {item.title}
-        </h2>
-        <p className="mt-0.5 text-xs text-neutral-500">
-          u/{item.reddit_accounts?.username ?? '—'} → r/
-          {item.subreddits?.name ?? '—'}
-          {' · '}
-          tentativa em {formatar(item.submit_attempted_at)}
-        </p>
+    <article className="rounded-md border border-ambar/40 bg-ambar/[0.06] p-4">
+      <header className="flex items-start gap-2.5">
+        <span
+          aria-hidden
+          className="mt-1.5 size-2 shrink-0 rounded-full bg-ambar"
+        />
+        <div>
+          <h2 className="font-medium text-fosforo">{item.title}</h2>
+          <p className="mt-0.5 text-xs text-fosforo-dim">
+            u/{item.reddit_accounts?.username ?? '—'} → r/
+            {item.subreddits?.name ?? '—'}
+            {' · '}
+            tentativa em{' '}
+            <span className="font-mono text-[11px]">
+              {formatar(item.submit_attempted_at)}
+            </span>
+          </p>
+        </div>
       </header>
 
-      <p className="mt-3 text-sm text-neutral-700 dark:text-neutral-300">
+      <p className="mt-3 text-sm text-fosforo">
         {explicarMotivo(item.review_reason)}
       </p>
 
@@ -82,7 +90,7 @@ export function ReviewCard({ item }: { item: ReviewRow }) {
           <button
             type="submit"
             disabled={verificando}
-            className="rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-sm text-neutral-700 transition-colors hover:bg-neutral-50 disabled:opacity-60 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-800"
+            className="rounded-sm border border-ambar/50 px-3 py-1.5 font-display text-[13px] font-medium uppercase tracking-[0.08em] text-ambar transition-colors hover:bg-ambar/15 disabled:opacity-60"
           >
             {verificando ? 'Consultando…' : 'Verificar no Reddit'}
           </button>
@@ -94,32 +102,32 @@ export function ReviewCard({ item }: { item: ReviewRow }) {
           <button
             type="submit"
             disabled={resolvendo}
-            className="rounded-md border border-neutral-300 bg-white px-3 py-1.5 text-sm text-neutral-700 transition-colors hover:bg-neutral-50 disabled:opacity-60 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-800"
+            className={`${botaoFantasma} py-1.5 text-[13px]`}
           >
             Não foi publicada
           </button>
         </form>
       </div>
 
-      <p className="mt-2 text-xs text-neutral-500">
+      <p className="mt-2 text-xs text-fosforo-dim">
         A verificação apenas <strong>lê</strong> as publicações da conta no
         Reddit. Nada é reenviado, e a decisão é sua.
       </p>
 
       {consulta.error && consulta.postId === null && (
-        <p className="mt-3 text-sm text-red-600 dark:text-red-400" role="alert">
+        <p className="mt-3 text-sm text-tijolo" role="alert">
           {consulta.error}
         </p>
       )}
       {decisao.error && (
-        <p className="mt-3 text-sm text-red-600 dark:text-red-400" role="alert">
+        <p className="mt-3 text-sm text-tijolo" role="alert">
           {decisao.error}
         </p>
       )}
 
       {candidatos !== null &&
         (candidatos.length === 0 ? (
-          <p className="mt-4 rounded-md border border-neutral-200 bg-white p-3 text-sm text-neutral-600 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-400">
+          <p className="mt-4 rounded-sm border border-risco bg-console p-3 text-sm text-fosforo-dim">
             Nenhuma publicação compatível foi encontrada na conta dentro da
             janela de tempo. Isso sugere que o envio não chegou — mas confira
             antes de decidir.
@@ -127,7 +135,7 @@ export function ReviewCard({ item }: { item: ReviewRow }) {
         ) : (
           <div className="mt-4">
             {candidatos.length > 1 && (
-              <p className="mb-2 text-sm text-amber-800 dark:text-amber-300">
+              <p className="mb-2 text-sm text-ambar">
                 Mais de uma publicação compatível. Confira cada uma: pode ter
                 sido publicada em duplicidade.
               </p>
@@ -136,12 +144,10 @@ export function ReviewCard({ item }: { item: ReviewRow }) {
               {candidatos.map((c) => (
                 <li
                   key={c.redditFullname}
-                  className="rounded-md border border-neutral-200 bg-white p-3 dark:border-neutral-800 dark:bg-neutral-900"
+                  className="rounded-sm border border-risco bg-console p-3"
                 >
-                  <p className="text-sm text-neutral-900 dark:text-neutral-50">
-                    {c.title}
-                  </p>
-                  <p className="mt-0.5 text-xs text-neutral-500">
+                  <p className="text-sm text-fosforo">{c.title}</p>
+                  <p className="mt-0.5 font-mono text-[11px] text-fosforo-dim">
                     {formatar(new Date(c.createdAt).toISOString())}
                   </p>
                   <div className="mt-2 flex flex-wrap items-center gap-3">
@@ -149,7 +155,7 @@ export function ReviewCard({ item }: { item: ReviewRow }) {
                       href={c.permalink}
                       target="_blank"
                       rel="noreferrer noopener"
-                      className="text-xs text-blue-600 underline dark:text-blue-400"
+                      className="text-xs text-standby underline transition-colors hover:text-fosforo"
                     >
                       Abrir no Reddit
                     </a>
@@ -174,7 +180,7 @@ export function ReviewCard({ item }: { item: ReviewRow }) {
                       <button
                         type="submit"
                         disabled={resolvendo}
-                        className="rounded-md bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-neutral-800 disabled:opacity-60 dark:bg-neutral-50 dark:text-neutral-900 dark:hover:bg-neutral-200"
+                        className="rounded-sm bg-ambar px-3 py-1.5 font-display text-xs font-semibold uppercase tracking-[0.08em] text-estudio transition-opacity hover:opacity-90 disabled:opacity-60"
                       >
                         É esta
                       </button>

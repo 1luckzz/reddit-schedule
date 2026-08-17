@@ -4,6 +4,12 @@ import {
   type CommunityRow,
 } from '@/components/communities/community-list'
 import { SyncButton } from '@/components/communities/sync-button'
+import {
+  descricaoPagina,
+  modulo,
+  plaqueta,
+  tituloPagina,
+} from '@/components/ui/estilo'
 
 export default async function CommunitiesPage() {
   const supabase = await createServerSupabase()
@@ -31,15 +37,14 @@ export default async function CommunitiesPage() {
 
   return (
     <div>
-      <h1 className="text-xl font-semibold text-neutral-900 dark:text-neutral-50">
-        Comunidades
-      </h1>
-      <p className="mt-1 text-sm text-neutral-500">
+      <p className={plaqueta}>Praças de exibição</p>
+      <h1 className={tituloPagina}>Comunidades</h1>
+      <p className={descricaoPagina}>
         Comunidades que cada conta modera, lidas da API oficial do Reddit.
       </p>
 
       {(contas ?? []).length === 0 ? (
-        <p className="mt-8 text-sm text-neutral-500">
+        <p className="mt-8 text-sm text-fosforo-dim">
           Conecte uma conta Reddit para sincronizar comunidades.
         </p>
       ) : (
@@ -51,14 +56,14 @@ export default async function CommunitiesPage() {
             return (
               <section
                 key={conta.id}
-                className="rounded-lg border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900"
+                className={`${modulo} p-4`}
               >
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
-                    <h2 className="font-medium text-neutral-900 dark:text-neutral-50">
+                    <h2 className="font-medium text-fosforo">
                       u/{conta.username}
                     </h2>
-                    <p className="mt-0.5 text-xs text-neutral-500">
+                    <p className="mt-0.5 text-xs text-fosforo-dim">
                       {ultima
                         ? `Sincronizada em ${new Date(ultima).toLocaleString('pt-BR')}`
                         : 'Nunca sincronizada'}
@@ -70,7 +75,7 @@ export default async function CommunitiesPage() {
                   {conta.status === 'connected' ? (
                     <SyncButton accountId={conta.id} username={conta.username} />
                   ) : (
-                    <p className="text-xs text-red-600">
+                    <p className="text-xs text-tijolo">
                       Reconecte a conta para sincronizar.
                     </p>
                   )}

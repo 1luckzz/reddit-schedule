@@ -1,6 +1,13 @@
 import Link from 'next/link'
 import { createServerSupabase } from '@/lib/supabase/server'
-import { corStatus, rotuloStatus } from '@/lib/scheduling/status'
+import { StatusChip } from '@/components/ui/status-chip'
+import { StudioClock } from '@/components/ui/studio-clock'
+import {
+  descricaoPagina,
+  modulo,
+  plaqueta,
+  tituloPagina,
+} from '@/components/ui/estilo'
 import { fromUtc, SUPPORTED_TIME_ZONES, toUtc } from '@/lib/scheduling/timezone'
 
 export default async function DashboardPage() {
@@ -36,17 +43,20 @@ export default async function DashboardPage() {
       .select('id', { count: 'exact', head: true })
   }
 
-  const [hoje, publicados, pendentes, falhas, emRevisao] = await Promise.all([
-    contar((q) =>
-      q
-        .gte('scheduled_at', inicioHoje.toISOString())
-        .lt('scheduled_at', fimHoje.toISOString()),
-    ),
-    contar((q) => q.eq('status', 'published')),
-    contar((q) => q.in('status', ['draft', 'scheduled', 'processing'])),
-    contar((q) => q.eq('status', 'failed')),
-    contar((q) => q.eq('status', 'needs_review')),
-  ])
+  const [hoje, publicados, pendentes, falhas, emRevisao, noAr] =
+    await Promise.all([
+      contar((q) =>
+        q
+          .gte('scheduled_at', inicioHoje.toISOString())
+          .lt('scheduled_at', fimHoje.toISOString()),
+      ),
+      contar((q) => q.eq('status', 'published')),
+      contar((q) => q.in('status', ['draft', 'scheduled', 'processing'])),
+      contar((q) => q.eq('status', 'failed')),
+      contar((q) => q.eq('status', 'needs_review')),
+      // A lâmpada da linha de transmissão: algo sendo publicado NESTE momento.
+      contar((q) => q.eq('status', 'processing')),
+    ])
 
   const { data: proximas } = await supabase
     .from('scheduled_posts')
@@ -71,68 +81,98 @@ export default async function DashboardPage() {
   const lista = (proximas ?? []) as unknown as Proxima[]
 
   return (
-    <div>
-      <h1 className="text-xl font-semibold text-neutral-900 dark:text-neutral-50">
-        Dashboard
-      </h1>
-      <p className="mt-1 text-sm text-neutral-500">
+    <div className="max-w-4xl">
+      <p className={plaqueta}>Mesa de controle</p>
+      <h1 className={tituloPagina}>Dashboard</h1>
+      <p className={descricaoPagina}>
         Horários no fuso do seu perfil ({fuso}).
       </p>
+
+      {/* A linha de transmissão: o estado geral do transmissor, num relance. */}
+      <div
+        className={`${modulo} mt-5 flex flex-wrap items-center justify-between gap-3 px-4 py-2.5`}
+      >
+        {noAr > 0 ? (
+          <div className="flex items-center gap-2.5">
+            <span
+              aria-hidden
+              className="size-2.5 rounded-full bg-noar lampada-noar"
+            />
+            <span className="font-display text-sm font-semibold uppercase tracking-[0.16em] text-noar">
+              No ar
+            </span>
+            <span className="text-sm text-fosforo-dim">
+              {noAr} publicação(ões) sendo transmitida(s) agora
+            </span>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2.5">
+            <span aria-hidden className="size-2.5 rounded-full bg-standby" />
+            <span className="font-display text-sm font-medium uppercase tracking-[0.16em] text-standby">
+              Standby
+            </span>
+            <span className="text-sm text-fosforo-dim">
+              aguardando o próximo horário da grade
+            </span>
+          </div>
+        )}
+        <StudioClock timeZone={fuso} />
+      </div>
 
       {emRevisao > 0 && (
         <Link
           href="/dashboard/review"
-          className="mt-5 block rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200"
+          className="mt-4 flex items-center gap-2.5 rounded-md border border-ambar/40 bg-ambar/10 p-3 text-sm text-fosforo transition-colors hover:bg-ambar/15"
         >
-          <strong>{emRevisao}</strong> publicação(ões) aguardando sua decisão. O
-          resultado não pôde ser confirmado e o sistema não tenta de novo
-          sozinho.
+          <span aria-hidden className="size-2 shrink-0 rounded-full bg-ambar" />
+          <span>
+            <strong className="font-mono">{emRevisao}</strong> publicação(ões)
+            aguardando sua decisão. O resultado não pôde ser confirmado e o
+            sistema não tenta de novo sozinho.
+          </span>
         </Link>
       )}
 
-      <dl className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <dl className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Indicador rotulo="Hoje" valor={hoje} />
         <Indicador rotulo="Publicados" valor={publicados} />
         <Indicador rotulo="Pendentes" valor={pendentes} />
-        <Indicador rotulo="Falhas" valor={falhas} />
+        <Indicador rotulo="Falhas" valor={falhas} alerta={falhas > 0} />
       </dl>
 
-      <h2 className="mt-8 text-sm font-medium text-neutral-900 dark:text-neutral-50">
-        Próximas publicações
-      </h2>
+      <h2 className={`${plaqueta} mt-8`}>Próximas publicações</h2>
 
       {lista.length === 0 ? (
-        <p className="mt-2 text-sm text-neutral-500">
+        <p className="mt-2 text-sm text-fosforo-dim">
           Nada programado.{' '}
-          <Link href="/dashboard/new" className="underline">
+          <Link href="/dashboard/new" className="text-ambar underline">
             Agendar uma publicação
           </Link>
           .
         </p>
       ) : (
-        <ul className="mt-2 divide-y divide-neutral-200 rounded-lg border border-neutral-200 bg-white dark:divide-neutral-800 dark:border-neutral-800 dark:bg-neutral-900">
+        <ul className={`${modulo} mt-2 divide-y divide-risco/60`}>
           {lista.map((p) => {
             const local = fromUtc(new Date(p.scheduled_at), fuso)
             return (
               <li
                 key={p.id}
-                className="flex flex-wrap items-center gap-2 px-3 py-2 text-sm"
+                className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2.5 text-sm"
               >
-                <span className="whitespace-nowrap text-neutral-600 dark:text-neutral-400">
-                  {local.date} {local.time}
+                <span className="font-mono text-[13px] tabular-nums text-ambar">
+                  {local.time}
                 </span>
-                <span className="whitespace-nowrap text-xs text-neutral-500">
+                <span className="font-mono text-[11px] tabular-nums text-fosforo-dim">
+                  {local.date}
+                </span>
+                <span className="whitespace-nowrap text-xs text-fosforo-dim">
                   u/{p.reddit_accounts?.username ?? '—'} → r/
                   {p.subreddits?.name ?? '—'}
                 </span>
-                <span className="min-w-0 flex-1 truncate text-neutral-900 dark:text-neutral-50">
+                <span className="min-w-0 flex-1 truncate text-fosforo">
                   {p.title}
                 </span>
-                <span
-                  className={`rounded px-1.5 py-0.5 text-xs ${corStatus(p.status)}`}
-                >
-                  {rotuloStatus(p.status)}
-                </span>
+                <StatusChip status={p.status} />
               </li>
             )
           })}
@@ -142,11 +182,23 @@ export default async function DashboardPage() {
   )
 }
 
-function Indicador({ rotulo, valor }: { rotulo: string; valor: number }) {
+function Indicador({
+  rotulo,
+  valor,
+  alerta = false,
+}: {
+  rotulo: string
+  valor: number
+  alerta?: boolean
+}) {
   return (
-    <div className="rounded-lg border border-neutral-200 bg-white p-3 dark:border-neutral-800 dark:bg-neutral-900">
-      <dt className="text-xs text-neutral-500">{rotulo}</dt>
-      <dd className="mt-0.5 text-2xl font-semibold text-neutral-900 dark:text-neutral-50">
+    <div className={`${modulo} p-3`}>
+      <dt className={plaqueta}>{rotulo}</dt>
+      <dd
+        className={`mt-1 font-mono text-[32px] leading-9 tabular-nums ${
+          alerta ? 'text-tijolo' : 'text-fosforo'
+        }`}
+      >
         {valor}
       </dd>
     </div>

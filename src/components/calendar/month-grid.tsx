@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import type { CalendarDay } from '@/lib/scheduling/calendar'
+import { botaoPrimario, campo, rotuloCampo } from '@/components/ui/estilo'
 import { corStatus, rotuloStatus } from '@/lib/scheduling/status'
 import { fromUtc, SUPPORTED_TIME_ZONES } from '@/lib/scheduling/timezone'
 
@@ -56,16 +57,21 @@ export function MonthGrid({
         <div className="flex items-center gap-2">
           <Link
             href={link(anterior.y, anterior.m)}
-            className="rounded-md border border-neutral-300 px-2 py-1 text-sm text-neutral-700 dark:border-neutral-700 dark:text-neutral-300"
+            aria-label="Mês anterior"
+            className="rounded-sm border border-risco px-2 py-1 text-sm text-fosforo-dim transition-colors hover:bg-console-2 hover:text-fosforo"
           >
             ←
           </Link>
-          <span className="text-sm font-medium text-neutral-900 dark:text-neutral-50">
-            {MESES[month - 1]} de {year}
+          <span className="font-display text-base font-semibold uppercase tracking-[0.1em] text-fosforo">
+            {MESES[month - 1]}{' '}
+            <span className="font-mono text-sm font-normal tracking-normal text-fosforo-dim">
+              {year}
+            </span>
           </span>
           <Link
             href={link(proximo.y, proximo.m)}
-            className="rounded-md border border-neutral-300 px-2 py-1 text-sm text-neutral-700 dark:border-neutral-700 dark:text-neutral-300"
+            aria-label="Próximo mês"
+            className="rounded-sm border border-risco px-2 py-1 text-sm text-fosforo-dim transition-colors hover:bg-console-2 hover:text-fosforo"
           >
             →
           </Link>
@@ -74,13 +80,9 @@ export function MonthGrid({
         <form method="get" action="/dashboard/calendar" className="flex items-end gap-2">
           <input type="hidden" name="year" value={year} />
           <input type="hidden" name="month" value={month} />
-          <label className="flex flex-col gap-1 text-xs text-neutral-600 dark:text-neutral-400">
+          <label className={rotuloCampo}>
             Fuso
-            <select
-              name="tz"
-              defaultValue={timeZone}
-              className="rounded-md border border-neutral-300 bg-white px-2 py-1 text-sm dark:border-neutral-700 dark:bg-neutral-900"
-            >
+            <select name="tz" defaultValue={timeZone} className={campo}>
               {SUPPORTED_TIME_ZONES.map((z) => (
                 <option key={z} value={z}>
                   {z}
@@ -88,20 +90,17 @@ export function MonthGrid({
               ))}
             </select>
           </label>
-          <button
-            type="submit"
-            className="rounded-md bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white dark:bg-neutral-50 dark:text-neutral-900"
-          >
+          <button type="submit" className={botaoPrimario}>
             Aplicar
           </button>
         </form>
       </div>
 
-      <div className="mt-3 grid grid-cols-7 gap-px overflow-hidden rounded-lg border border-neutral-200 bg-neutral-200 dark:border-neutral-800 dark:bg-neutral-800">
+      <div className="mt-3 grid grid-cols-7 gap-px overflow-hidden rounded-md border border-risco bg-risco">
         {SEMANA.map((d) => (
           <div
             key={d}
-            className="bg-neutral-50 px-2 py-1.5 text-center text-xs font-medium text-neutral-500 dark:bg-neutral-950"
+            className="bg-estudio px-2 py-1.5 text-center font-display text-[11px] font-medium uppercase tracking-[0.14em] text-fosforo-dim"
           >
             {d}
           </div>
@@ -115,23 +114,31 @@ export function MonthGrid({
           return (
             <div
               key={dia.date}
-              className={`min-h-24 bg-white p-1.5 dark:bg-neutral-900 ${
-                dia.inMonth ? '' : 'opacity-50'
+              className={`min-h-24 bg-console p-1.5 ${
+                dia.inMonth ? '' : 'opacity-45'
               }`}
             >
-              <span className="text-xs text-neutral-500">{dia.day}</span>
+              <span className="font-mono text-[11px] tabular-nums text-fosforo-dim">
+                {dia.day}
+              </span>
 
               <ul className="mt-1 space-y-1">
                 {visiveis.map((p) => {
                   const { time } = fromUtc(new Date(p.scheduled_at), timeZone)
                   return (
                     <li key={p.id}>
+                      {/*
+                        Cada publicação é uma barra de sinal: régua à esquerda
+                        na cor do estado, horário em mono. A cor É o estado —
+                        a mesma linguagem de lâmpada do resto do console.
+                      */}
                       <Link
                         href={`/dashboard/queue?from=${dia.date}&to=${dia.date}`}
                         title={`${p.title} — ${rotuloStatus(p.status)}`}
-                        className={`block truncate rounded px-1 py-0.5 text-[11px] ${corStatus(p.status)}`}
+                        className={`block truncate rounded-r-sm border-l-2 py-0.5 pl-1.5 pr-1 text-[11px] leading-4 transition-colors hover:bg-console-2 ${corStatus(p.status)}`}
                       >
-                        {time} u/{p.reddit_accounts?.username ?? '—'} · {p.title}
+                        <span className="font-mono tabular-nums">{time}</span>{' '}
+                        u/{p.reddit_accounts?.username ?? '—'} · {p.title}
                       </Link>
                     </li>
                   )
@@ -141,7 +148,7 @@ export function MonthGrid({
               {resto > 0 && (
                 <Link
                   href={`/dashboard/queue?from=${dia.date}&to=${dia.date}`}
-                  className="mt-1 block text-[11px] text-neutral-500 underline"
+                  className="mt-1 block font-mono text-[11px] text-fosforo-dim underline transition-colors hover:text-fosforo"
                 >
                   +{resto}
                 </Link>

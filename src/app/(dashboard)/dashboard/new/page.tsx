@@ -1,6 +1,11 @@
 // src/app/(dashboard)/dashboard/new/page.tsx
 import { createServerSupabase } from '@/lib/supabase/server'
 import { NewPostForm } from '@/components/posts/new-post-form'
+import {
+  descricaoPagina,
+  plaqueta,
+  tituloPagina,
+} from '@/components/ui/estilo'
 
 export default async function NewPostPage() {
   const supabase = await createServerSupabase()
@@ -19,15 +24,14 @@ export default async function NewPostPage() {
 
   return (
     <div className="max-w-3xl">
-      <h1 className="text-xl font-semibold text-neutral-900 dark:text-neutral-50">
-        Nova publicação
-      </h1>
-      <p className="mt-1 text-sm text-neutral-500">
+      <p className={plaqueta}>Nova entrada na grade</p>
+      <h1 className={tituloPagina}>Nova publicação</h1>
+      <p className={descricaoPagina}>
         Agende uma publicação em uma das comunidades que você modera.
       </p>
 
       {(contas ?? []).length === 0 ? (
-        <p className="mt-8 text-sm text-neutral-500">
+        <p className="mt-8 text-sm text-fosforo-dim">
           Conecte uma conta Reddit e sincronize as comunidades antes de agendar.
         </p>
       ) : (

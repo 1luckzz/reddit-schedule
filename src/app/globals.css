@@ -1,26 +1,97 @@
 @import "tailwindcss";
 
+/* ------------------------------------------------------------------
+   Sala de transmissão — tema único, escuro quente.
+
+   O painel é a mesa de controle de uma emissora: fundo de carvão com
+   subtom marrom (baquelite, não OLED), texto em creme fósforo e um
+   sistema de lâmpadas em que COR É ESTADO, nunca decoração:
+
+     âmbar    → atenção / ação primária / aguardando revisão
+     vermelho → NO AR (publicando agora) — vivo, não erro
+     tijolo   → falhou (fosco de propósito, sem brilho de lâmpada)
+     verde    → publicado
+     azul     → programado (standby)
+   ------------------------------------------------------------------ */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --estudio: #191511;
+  --console: #221d18;
+  --console-2: #2a241d;
+  --risco: #3a3228;
+  --fosforo: #efe6d8;
+  --fosforo-dim: #a89c8a;
+  --ambar: #e5a83b;
+  --noar: #e0473d;
+  --tijolo: #b0524a;
+  --ok: #7da96b;
+  --standby: #7a9bb8;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-estudio: var(--estudio);
+  --color-console: var(--console);
+  --color-console-2: var(--console-2);
+  --color-risco: var(--risco);
+  --color-fosforo: var(--fosforo);
+  --color-fosforo-dim: var(--fosforo-dim);
+  --color-ambar: var(--ambar);
+  --color-noar: var(--noar);
+  --color-tijolo: var(--tijolo);
+  --color-ok: var(--ok);
+  --color-standby: var(--standby);
+  --font-sans: var(--font-barlow);
+  --font-display: var(--font-barlow-condensed);
+  --font-mono: var(--font-plex-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  /* Controles nativos (date, time, select) rendem escuros. */
+  color-scheme: dark;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--estudio);
+  color: var(--fosforo);
+  font-family: var(--font-barlow), system-ui, sans-serif;
+}
+
+/* Foco visível em âmbar em todo elemento interativo. */
+:focus-visible {
+  outline: 2px solid var(--ambar);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--ambar) 30%, transparent);
+}
+
+/* Checkboxes e radios nativos acompanham a lâmpada âmbar do console. */
+input[type='checkbox'],
+input[type='radio'] {
+  accent-color: var(--ambar);
+}
+
+/* ------------------------------------------------------------------
+   A lâmpada NO AR: o único movimento orquestrado da interface.
+   ------------------------------------------------------------------ */
+@keyframes pulso-noar {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 6px 1px color-mix(in srgb, var(--noar) 60%, transparent);
+  }
+  50% {
+    opacity: 0.5;
+    box-shadow: none;
+  }
+}
+
+.lampada-noar {
+  animation: pulso-noar 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lampada-noar {
+    animation: none;
+  }
 }

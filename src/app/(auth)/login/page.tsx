@@ -7,10 +7,10 @@ import type { AuthState } from './schema'
 const initial: AuthState = { error: null }
 
 const inputClass =
-  'mt-1 w-full rounded-md border border-neutral-300 px-3 py-2 text-sm outline-none transition-colors focus:border-neutral-900 dark:border-neutral-700 dark:bg-neutral-950 dark:focus:border-neutral-100'
+  'mt-1 w-full rounded-sm border border-risco bg-estudio px-3 py-2 text-sm text-fosforo transition-colors focus:border-ambar'
 
 const labelClass =
-  'block text-sm font-medium text-neutral-700 dark:text-neutral-300'
+  'block font-display text-[11px] font-medium uppercase tracking-[0.12em] text-fosforo-dim'
 
 export default function LoginPage() {
   const [state, action, pending] = useActionState(signIn, initial)
@@ -22,12 +22,15 @@ export default function LoginPage() {
   const busy = pending || signUpPending
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-neutral-50 p-6 dark:bg-neutral-950">
-      <div className="w-full max-w-sm rounded-xl border border-neutral-200 bg-white p-8 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
-        <h1 className="text-lg font-semibold text-neutral-900 dark:text-neutral-50">
-          Reddit Scheduler
-        </h1>
-        <p className="mt-1 text-sm text-neutral-500">
+    <main className="flex min-h-screen items-center justify-center bg-estudio p-6">
+      <div className="w-full max-w-sm rounded-md border border-risco bg-console p-8">
+        <div className="flex items-center gap-2">
+          <span aria-hidden className="size-2 rounded-full bg-ambar" />
+          <h1 className="font-display text-lg font-semibold uppercase tracking-[0.16em] text-fosforo">
+            Reddit Scheduler
+          </h1>
+        </div>
+        <p className="mt-1 text-sm text-fosforo-dim">
           Entre para acessar o painel.
         </p>
 
@@ -61,7 +64,7 @@ export default function LoginPage() {
           </div>
 
           {error && (
-            <p role="alert" className="text-sm text-red-600">
+            <p role="alert" className="text-sm text-tijolo">
               {error}
             </p>
           )}
@@ -70,14 +73,14 @@ export default function LoginPage() {
             <button
               formAction={action}
               disabled={busy}
-              className="flex-1 rounded-md bg-neutral-900 px-3 py-2 text-sm font-medium text-white transition-opacity disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
+              className="flex-1 rounded-sm bg-ambar px-3 py-2 font-display text-sm font-semibold uppercase tracking-[0.08em] text-estudio transition-opacity hover:opacity-90 disabled:opacity-50"
             >
               {pending ? 'Entrando…' : 'Entrar'}
             </button>
             <button
               formAction={signUpAction}
               disabled={busy}
-              className="rounded-md border border-neutral-300 px-3 py-2 text-sm font-medium text-neutral-700 transition-colors hover:bg-neutral-50 disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+              className="rounded-sm border border-risco px-3 py-2 text-sm text-fosforo-dim transition-colors hover:bg-console-2 hover:text-fosforo disabled:opacity-50"
             >
               {signUpPending ? 'Criando…' : 'Criar conta'}
             </button>

@@ -1,6 +1,11 @@
 import { createServerSupabase } from '@/lib/supabase/server'
 import { QueueFilters } from '@/components/queue/queue-filters'
 import { QueueTable, type QueueRow } from '@/components/queue/queue-table'
+import {
+  descricaoPagina,
+  plaqueta,
+  tituloPagina,
+} from '@/components/ui/estilo'
 import { POST_STATUSES, QUEUE_STATUSES } from '@/lib/scheduling/status'
 import { SUPPORTED_TIME_ZONES } from '@/lib/scheduling/timezone'
 
@@ -82,10 +87,9 @@ export default async function QueuePage({
 
   return (
     <div>
-      <h1 className="text-xl font-semibold text-neutral-900 dark:text-neutral-50">
-        Fila
-      </h1>
-      <p className="mt-1 text-sm text-neutral-500">
+      <p className={plaqueta}>Roteiro de transmissão</p>
+      <h1 className={tituloPagina}>Fila</h1>
+      <p className={descricaoPagina}>
         O que ainda vai acontecer, em ordem cronológica.
       </p>
 
