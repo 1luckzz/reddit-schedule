@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { adminClient, cleanupTestUsers, createTestUser } from './helpers'
+import { acquireQueueLock, releaseQueueLock } from './queue-lock'
 
 let userA: { id: string; accessToken: string }
 let conta: string
@@ -36,6 +37,9 @@ const reap = (timeout = 300) =>
   adminClient().rpc('reap_stale_jobs', { p_timeout_seconds: timeout })
 
 beforeAll(async () => {
+  // A fila é global: sem isto, os arquivos que reivindicam jobs pegam as
+  // linhas uns dos outros quando o Vitest os roda em paralelo.
+  await acquireQueueLock()
   const stamp = Date.now()
   userA = await createTestUser(`rp-${stamp}@teste.local`)
 
@@ -71,7 +75,9 @@ beforeEach(async () => {
 })
 
 afterAll(async () => {
+  // Limpar antes de liberar: o próximo arquivo não pode herdar jobs vencidos.
   await cleanupTestUsers([userA.id])
+  await releaseQueueLock()
 })
 
 describe('reaper', () => {
