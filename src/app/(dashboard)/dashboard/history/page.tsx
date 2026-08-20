@@ -52,6 +52,7 @@ export default async function HistoryPage({
        resolved_by, resolved_at, publisher,
        reddit_accounts ( username ),
        subreddits!scheduled_posts_subreddit_id_owner_id_fkey ( name ),
+       devvit_installations!scheduled_posts_devvit_installation_fkey ( subreddit_name ),
        scheduled_comments ( status )`,
     )
     .order('scheduled_at', { ascending: false })

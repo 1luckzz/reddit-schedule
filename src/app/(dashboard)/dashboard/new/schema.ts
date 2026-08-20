@@ -110,6 +110,69 @@ export const newPostSchema = z
 
 export type NewPostInput = z.infer<typeof newPostSchema>
 
+/**
+ * Destino Devvit: o formulário envia SOMENTE o id da instalação — nunca
+ * publisher, owner ou nome de subreddit. O backend carrega a instalação pelo
+ * id, valida dono e status, e obtém o subreddit real do banco.
+ *
+ * Sem conta, sem flair (exigiria Data API) e sem modos de comentário: no
+ * fluxo provado o comentário sai imediatamente após a publicação.
+ */
+export const newDevvitPostSchema = z
+  .object({
+    devvitInstallationId: z.uuid(),
+    title: z.string().trim().min(1, 'Informe o título.').max(300),
+    url: z.string().trim().default(''),
+    body: z.string().trim().default(''),
+    nsfw: checkbox,
+    spoiler: checkbox,
+    allowCommentFallback: checkbox,
+
+    date: z.string().trim().default(''),
+    time: z.string().trim().default(''),
+    timeZone: z.enum(SUPPORTED_TIME_ZONES),
+    publishMode: z.enum(['now', 'schedule']),
+    occurrence: z
+      .string()
+      .trim()
+      .default('')
+      .transform((v) => (v === '' ? undefined : Number(v)))
+      .refine((v) => v === undefined || (Number.isInteger(v) && v >= 0), {
+        message: 'Ocorrência inválida.',
+      }),
+
+    addComment: checkbox,
+    commentBody: z.string().trim().default(''),
+  })
+  .superRefine((v, ctx) => {
+    if (v.publishMode === 'schedule') {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(v.date)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['date'],
+          message: 'Informe a data da publicação.',
+        })
+      }
+      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(v.time)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['time'],
+          message: 'Informe o horário da publicação.',
+        })
+      }
+    }
+
+    if (v.addComment && v.commentBody.length === 0) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['commentBody'],
+        message: 'Informe o texto do comentário.',
+      })
+    }
+  })
+
+export type NewDevvitPostInput = z.infer<typeof newDevvitPostSchema>
+
 export type TimeChoice = {
   /** Índice a reenviar em `occurrence`. */
   index: number

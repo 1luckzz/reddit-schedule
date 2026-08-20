@@ -33,6 +33,7 @@ export type QueueRow = {
   devvit_sync_error: string | null
   reddit_accounts: { username: string } | null
   subreddits: { name: string } | null
+  devvit_installations: { subreddit_name: string } | null
 }
 
 const inicial: QueueState = { error: null, ok: false }
@@ -104,11 +105,16 @@ function QueueLinha({
           </span>
         </td>
         <td className="whitespace-nowrap px-4 py-3 text-xs text-medio">
-          {/* No caminho Devvit a identidade que publica é o app, não a conta. */}
+          {/* No caminho Devvit a identidade que publica é o app, não a conta,
+              e a comunidade vem da instalação — inclusive depois de ela ser
+              desativada, já que a FK preserva o vínculo com o histórico. */}
           {item.publisher === 'devvit'
             ? 'App Devvit'
             : `u/${item.reddit_accounts?.username ?? '—'}`}{' '}
-          → r/{item.subreddits?.name ?? '—'}
+          → r/
+          {item.subreddits?.name ??
+            item.devvit_installations?.subreddit_name ??
+            '—'}
         </td>
         <td className="max-w-xs truncate px-4 py-3 text-claro">
           {item.title}

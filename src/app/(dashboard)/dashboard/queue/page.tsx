@@ -52,7 +52,8 @@ export default async function QueuePage({
        publisher, devvit_sync_status, devvit_sync_error,
        reddit_account_id, subreddit_id,
        reddit_accounts ( username ),
-       subreddits!scheduled_posts_subreddit_id_owner_id_fkey ( name )`,
+       subreddits!scheduled_posts_subreddit_id_owner_id_fkey ( name ),
+       devvit_installations!scheduled_posts_devvit_installation_fkey ( subreddit_name )`,
     )
     .order('scheduled_at', { ascending: true })
 

@@ -212,14 +212,35 @@ describe('claims ignoram o caminho Devvit', () => {
 })
 
 describe('create_scheduled_post com publisher=devvit', () => {
-  const chamarRpc = (post: Record<string, unknown>) =>
+  /** Payload devvit canônico: SEM conta e SEM comunidade legacy. */
+  const chamarRpcDevvit = (
+    post: Record<string, unknown> = {},
+    comment: Record<string, unknown> | null = null,
+  ) =>
+    adminClient().rpc('create_scheduled_post', {
+      p_owner_id: userA.id,
+      p_post: {
+        title: 'Post devvit',
+        url: 'https://exemplo.com/d',
+        post_kind: 'link',
+        scheduled_at: new Date(Date.now() + 3600_000).toISOString(),
+        timezone: 'America/Sao_Paulo',
+        status: 'scheduled',
+        publisher: 'devvit',
+        devvit_installation_id: instalacao,
+        ...post,
+      },
+      p_comment: comment,
+    })
+
+  const chamarRpcWorker = (post: Record<string, unknown> = {}) =>
     adminClient().rpc('create_scheduled_post', {
       p_owner_id: userA.id,
       p_post: {
         reddit_account_id: conta,
         subreddit_id: sub,
-        title: 'Post devvit',
-        url: 'https://exemplo.com/d',
+        title: 'Post worker',
+        url: 'https://exemplo.com/w',
         post_kind: 'link',
         scheduled_at: new Date(Date.now() + 3600_000).toISOString(),
         timezone: 'America/Sao_Paulo',
@@ -228,32 +249,63 @@ describe('create_scheduled_post com publisher=devvit', () => {
       },
     })
 
-  it('grava publisher, instalação e sync pending', async () => {
-    const { data, error } = await chamarRpc({
-      publisher: 'devvit',
-      devvit_installation_id: instalacao,
-    })
+  it('cria post devvit SEM conta e SEM comunidade, com sync pending', async () => {
+    const { data, error } = await chamarRpcDevvit()
     expect(error).toBeNull()
 
     const { data: linha } = await adminClient()
       .from('scheduled_posts')
-      .select('publisher, devvit_installation_id, devvit_sync_status, devvit_job_id')
+      .select(
+        'publisher, devvit_installation_id, devvit_sync_status, devvit_job_id, reddit_account_id, subreddit_id',
+      )
       .eq('id', data as string)
       .single()
     expect(linha!.publisher).toBe('devvit')
     expect(linha!.devvit_installation_id).toBe(instalacao)
     expect(linha!.devvit_sync_status).toBe('pending')
     expect(linha!.devvit_job_id).toBeNull()
+    expect(linha!.reddit_account_id).toBeNull()
+    expect(linha!.subreddit_id).toBeNull()
   })
 
-  it('sem publisher continua nascendo como worker, sem resíduo devvit', async () => {
-    const { data, error } = await chamarRpc({})
+  it('o comentário do post devvit nasce sem conta Reddit', async () => {
+    const { data, error } = await chamarRpcDevvit(
+      {},
+      { body: 'primeiro comentário', mode: 'immediate' },
+    )
     expect(error).toBeNull()
 
+    const { data: comentario } = await adminClient()
+      .from('scheduled_comments')
+      .select('reddit_account_id, mode, status')
+      .eq('scheduled_post_id', data as string)
+      .single()
+    expect(comentario!.reddit_account_id).toBeNull()
+    expect(comentario!.mode).toBe('immediate')
+  })
+
+  it('rejeita conta ou comunidade legacy junto de devvit', async () => {
+    const comConta = await chamarRpcDevvit({ reddit_account_id: conta })
+    expect(comConta.error).not.toBeNull()
+
+    const comSub = await chamarRpcDevvit({ subreddit_id: sub })
+    expect(comSub.error).not.toBeNull()
+  })
+
+  it('worker continua exigindo conta e comunidade', async () => {
+    const semConta = await chamarRpcWorker({ reddit_account_id: null })
+    expect(semConta.error).not.toBeNull()
+
+    const semSub = await chamarRpcWorker({ subreddit_id: null })
+    expect(semSub.error).not.toBeNull()
+
+    // Controle positivo: com os dois, o worker cria normalmente.
+    const completo = await chamarRpcWorker()
+    expect(completo.error).toBeNull()
     const { data: linha } = await adminClient()
       .from('scheduled_posts')
       .select('publisher, devvit_installation_id, devvit_sync_status')
-      .eq('id', data as string)
+      .eq('id', completo.data as string)
       .single()
     expect(linha!.publisher).toBe('worker')
     expect(linha!.devvit_installation_id).toBeNull()
@@ -261,7 +313,14 @@ describe('create_scheduled_post com publisher=devvit', () => {
   })
 
   it('rejeita devvit sem instalação', async () => {
-    const { error } = await chamarRpc({ publisher: 'devvit' })
+    const { error } = await chamarRpcDevvit({ devvit_installation_id: null })
+    expect(error).not.toBeNull()
+  })
+
+  it('rejeita instalação inexistente', async () => {
+    const { error } = await chamarRpcDevvit({
+      devvit_installation_id: '00000000-0000-0000-0000-000000000000',
+    })
     expect(error).not.toBeNull()
   })
 
@@ -271,10 +330,7 @@ describe('create_scheduled_post com publisher=devvit', () => {
       .update({ status: 'disabled' })
       .eq('id', instalacao)
     try {
-      const { error } = await chamarRpc({
-        publisher: 'devvit',
-        devvit_installation_id: instalacao,
-      })
+      const { error } = await chamarRpcDevvit()
       expect(error).not.toBeNull()
     } finally {
       await adminClient()
@@ -282,26 +338,6 @@ describe('create_scheduled_post com publisher=devvit', () => {
         .update({ status: 'active' })
         .eq('id', instalacao)
     }
-  })
-
-  it('rejeita instalação de OUTRO subreddit', async () => {
-    // Instalação válida e ativa do mesmo owner, mas de outra comunidade: é a
-    // barreira "o subreddit pertence à instalação permitida".
-    const { data: outra } = await adminClient()
-      .from('devvit_installations')
-      .insert({
-        owner_id: userA.id,
-        subreddit_name: 'outra_comunidade',
-        app_slug: 'grapepos2',
-      })
-      .select('id')
-      .single()
-
-    const { error } = await chamarRpc({
-      publisher: 'devvit',
-      devvit_installation_id: outra!.id,
-    })
-    expect(error).not.toBeNull()
   })
 
   it('rejeita instalação de outro owner', async () => {
@@ -315,23 +351,34 @@ describe('create_scheduled_post com publisher=devvit', () => {
       .select('id')
       .single()
 
-    const { error } = await chamarRpc({
-      publisher: 'devvit',
+    const { error } = await chamarRpcDevvit({
       devvit_installation_id: alheia!.id,
     })
     expect(error).not.toBeNull()
   })
 
   it('rejeita instalação junto de publisher=worker', async () => {
-    const { error } = await chamarRpc({
-      publisher: 'worker',
+    const { error } = await chamarRpcWorker({
       devvit_installation_id: instalacao,
     })
     expect(error).not.toBeNull()
   })
 
   it('rejeita publisher desconhecido', async () => {
-    const { error } = await chamarRpc({ publisher: 'lambda' })
+    const { error } = await chamarRpcWorker({ publisher: 'lambda' })
+    expect(error).not.toBeNull()
+  })
+
+  it('instalação com histórico não pode ser apagada; disabled é o caminho', async () => {
+    // Garante que existe pelo menos um post apontando para a instalação.
+    const { error: erroCriar } = await chamarRpcDevvit()
+    expect(erroCriar).toBeNull()
+
+    const { error } = await adminClient()
+      .from('devvit_installations')
+      .delete()
+      .eq('id', instalacao)
+    // FK sem cascade: o delete falha enquanto houver agendamentos/histórico.
     expect(error).not.toBeNull()
   })
 })

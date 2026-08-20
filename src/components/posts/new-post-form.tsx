@@ -2,7 +2,10 @@
 'use client'
 
 import { useActionState, useEffect, useMemo, useState } from 'react'
-import { createScheduledPost } from '@/app/(dashboard)/dashboard/new/actions'
+import {
+  createScheduledDevvitPost,
+  createScheduledPost,
+} from '@/app/(dashboard)/dashboard/new/actions'
 import type { CreateState } from '@/app/(dashboard)/dashboard/new/schema'
 import { SUPPORTED_TIME_ZONES } from '@/lib/scheduling/timezone'
 
@@ -21,6 +24,7 @@ type Community = {
   submission_type: string | null
   link_flair_enabled: boolean
 }
+type DevvitDestination = { id: string; subredditName: string }
 type Flair = { id: string; text: string; modOnly: boolean }
 
 const field =
@@ -32,15 +36,40 @@ const secao = 'text-sm font-medium text-claro'
 export function NewPostForm({
   accounts,
   communities,
-  devvitCommunities = [],
+  devvitDestinations = [],
 }: {
   accounts: Account[]
   communities: Community[]
-  /** Nomes (minúsculos) das comunidades com instalação Devvit ativa. */
-  devvitCommunities?: string[]
+  /** Instalações Devvit ativas do usuário: destino sem conta Reddit. */
+  devvitDestinations?: DevvitDestination[]
 }) {
-  const [state, action, pending] = useActionState(createScheduledPost, initial)
+  const temLegacy = accounts.length > 0
+  const temDevvit = devvitDestinations.length > 0
 
+  /**
+   * O tipo de destino NÃO é escolha de publisher: é escolha de comunidade.
+   * O backend deriva o publisher do fluxo — o formulário Devvit envia apenas
+   * o id da instalação.
+   */
+  const [tipoDestino, setTipoDestino] = useState<'devvit' | 'legacy'>(
+    temDevvit ? 'devvit' : 'legacy',
+  )
+  const viaDevvit = tipoDestino === 'devvit'
+
+  const [legacyState, legacyAction, legacyPending] = useActionState(
+    createScheduledPost,
+    initial,
+  )
+  const [devvitState, devvitAction, devvitPending] = useActionState(
+    createScheduledDevvitPost,
+    initial,
+  )
+  const state = viaDevvit ? devvitState : legacyState
+  const pending = viaDevvit ? devvitPending : legacyPending
+
+  const [devvitInstallationId, setDevvitInstallationId] = useState(
+    devvitDestinations[0]?.id ?? '',
+  )
   const [accountId, setAccountId] = useState(accounts[0]?.id ?? '')
   const [subredditId, setSubredditId] = useState('')
   const [url, setUrl] = useState('')
@@ -58,11 +87,6 @@ export function NewPostForm({
     [communities, accountId],
   )
 
-  /**
-   * Trocar de conta invalida a comunidade escolhida — e isso é consequência
-   * direta da ação do usuário, então mora no handler. Fazer em useEffect
-   * dispararia um render em cascata a cada troca.
-   */
   function trocarConta(novo: string) {
     setAccountId(novo)
     setSubredditId('')
@@ -70,9 +94,10 @@ export function NewPostForm({
     setFlairErro(null)
   }
 
-  // Flairs sob demanda, ao escolher a comunidade.
+  // Flairs sob demanda, ao escolher a comunidade — somente no caminho legacy:
+  // o caminho Devvit não fala com a Data API.
   useEffect(() => {
-    if (!accountId || !subredditId) return
+    if (viaDevvit || !accountId || !subredditId) return
     let cancelado = false
 
     fetch(`/api/reddit/flairs?accountId=${accountId}&subredditId=${subredditId}`)
@@ -80,7 +105,6 @@ export function NewPostForm({
         const json = await r.json()
         if (cancelado) return
         if (!r.ok) {
-          // Nunca dizemos "não tem flair" quando não conseguimos verificar.
           setFlairs([])
           setFlairErro(json.erro ?? 'Não foi possível carregar os flairs.')
           return
@@ -97,98 +121,141 @@ export function NewPostForm({
     return () => {
       cancelado = true
     }
-  }, [accountId, subredditId])
+  }, [viaDevvit, accountId, subredditId])
 
   const precisaComentario = url.trim() !== '' && body.trim() !== ''
 
-  const comunidadeEscolhida = doAccount.find((c) => c.id === subredditId)
-  const viaDevvit = Boolean(
-    comunidadeEscolhida &&
-      devvitCommunities.includes(comunidadeEscolhida.name.toLowerCase()),
+  const destinoDevvit = devvitDestinations.find(
+    (d) => d.id === devvitInstallationId,
   )
+  const comunidadeEscolhida = doAccount.find((c) => c.id === subredditId)
   const contaEscolhida = accounts.find((a) => a.id === accountId)
 
   return (
-    <form action={action} className="mt-8 space-y-8">
+    <form action={viaDevvit ? devvitAction : legacyAction} className="mt-8 space-y-8">
       {/* ---------------- Destino ---------------- */}
       <section>
         <h2 className={secao}>Destino</h2>
-        <div className="mt-3 grid gap-4 sm:grid-cols-2">
-          <div>
-            <label htmlFor="accountId" className={label}>
+
+        {/* O seletor de tipo só existe quando os dois caminhos existem. */}
+        {temDevvit && temLegacy && (
+          <div className="mt-3 flex flex-wrap gap-5">
+            <label className="flex items-center gap-2 text-sm text-claro">
+              <input
+                type="radio"
+                name="tipoDestino"
+                value="devvit"
+                checked={viaDevvit}
+                onChange={() => setTipoDestino('devvit')}
+              />
+              App Devvit
+            </label>
+            <label className="flex items-center gap-2 text-sm text-claro">
+              <input
+                type="radio"
+                name="tipoDestino"
+                value="legacy"
+                checked={!viaDevvit}
+                onChange={() => setTipoDestino('legacy')}
+              />
               Conta Reddit
             </label>
-            <select
-              id="accountId"
-              name="accountId"
-              required
-              className={field}
-              value={accountId}
-              onChange={(e) => trocarConta(e.target.value)}
-            >
-              {accounts.map((a) => (
-                <option key={a.id} value={a.id}>
-                  u/{a.username}
-                </option>
-              ))}
-            </select>
           </div>
+        )}
 
-          <div>
-            <label htmlFor="subredditId" className={label}>
-              Comunidade
-            </label>
-            <select
-              id="subredditId"
-              name="subredditId"
-              required
-              className={field}
-              value={subredditId}
-              onChange={(e) => setSubredditId(e.target.value)}
-            >
-              <option value="">Selecione…</option>
-              {doAccount.map((c) => (
-                <option key={c.id} value={c.id}>
-                  r/{c.name}
-                </option>
-              ))}
-            </select>
-            {doAccount.length === 0 && (
-              <p className="mt-1.5 text-xs text-areia">
-                Esta conta ainda não tem comunidades sincronizadas.
-              </p>
-            )}
+        {viaDevvit ? (
+          <div className="mt-3 grid gap-4 sm:grid-cols-2">
+            <div>
+              <label htmlFor="devvitInstallationId" className={label}>
+                Comunidade
+              </label>
+              <select
+                id="devvitInstallationId"
+                name="devvitInstallationId"
+                required
+                className={field}
+                value={devvitInstallationId}
+                onChange={(e) => setDevvitInstallationId(e.target.value)}
+              >
+                {devvitDestinations.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    r/{d.subredditName}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
-        </div>
+        ) : (
+          <div className="mt-3 grid gap-4 sm:grid-cols-2">
+            <div>
+              <label htmlFor="accountId" className={label}>
+                Conta Reddit
+              </label>
+              <select
+                id="accountId"
+                name="accountId"
+                required
+                className={field}
+                value={accountId}
+                onChange={(e) => trocarConta(e.target.value)}
+              >
+                {accounts.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    u/{a.username}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label htmlFor="subredditId" className={label}>
+                Comunidade
+              </label>
+              <select
+                id="subredditId"
+                name="subredditId"
+                required
+                className={field}
+                value={subredditId}
+                onChange={(e) => setSubredditId(e.target.value)}
+              >
+                <option value="">Selecione…</option>
+                {doAccount.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    r/{c.name}
+                  </option>
+                ))}
+              </select>
+              {doAccount.length === 0 && (
+                <p className="mt-1.5 text-xs text-areia">
+                  Esta conta ainda não tem comunidades sincronizadas.
+                </p>
+              )}
+            </div>
+          </div>
+        )}
 
         {/*
-          A identidade de publicação é decidida pelo backend, nunca aqui: o
-          formulário apenas informa qual caminho esta comunidade usa. No
-          caminho Devvit quem publica é o app (runAs APP), não a conta — a
-          conta selecionada segue validando a comunidade e os flairs.
+          A identidade de publicação é derivada no backend, nunca aqui. No
+          caminho Devvit quem publica é o app instalado na comunidade (runAs
+          APP) — não existe conta Reddit envolvida.
         */}
-        {comunidadeEscolhida && (
+        {viaDevvit && destinoDevvit && (
           <div className="anima-painel mt-4 rounded-lg border border-traco bg-white/[0.03] p-3.5 text-sm">
-            {viaDevvit ? (
-              <>
-                <p className="text-claro">
-                  Publicador: <span className="font-medium">App Devvit</span>
-                </p>
-                <p className="mt-0.5 text-claro">
-                  Será publicado em r/{comunidadeEscolhida.name}
-                </p>
-                <p className="mt-1.5 text-xs text-fraco">
-                  A publicação será feita pelo aplicativo instalado na
-                  comunidade, não pela conta u/
-                  {contaEscolhida?.username ?? '—'}.
-                </p>
-              </>
-            ) : (
-              <p className="text-claro">
-                Será publicado em r/{comunidadeEscolhida.name} por u/
-                {contaEscolhida?.username ?? '—'}
-              </p>
-            )}
+            <p className="text-claro">
+              Publicador: <span className="font-medium">App Devvit</span>
+            </p>
+            <p className="mt-0.5 text-claro">
+              Será publicado em r/{destinoDevvit.subredditName}
+            </p>
+          </div>
+        )}
+        {!viaDevvit && comunidadeEscolhida && (
+          <div className="anima-painel mt-4 rounded-lg border border-traco bg-white/[0.03] p-3.5 text-sm">
+            <p className="text-claro">
+              Será publicado em r/{comunidadeEscolhida.name} por u/
+              {contaEscolhida?.username ?? '—'}
+            </p>
           </div>
         )}
       </section>
@@ -243,8 +310,8 @@ export function NewPostForm({
           {precisaComentario && (
             <div className="anima-painel rounded-lg border border-areia/30 bg-areia/10 p-3.5">
               <p className="text-sm text-claro">
-                A API do Reddit não permite link e texto na mesma publicação.
-                O texto pode ser enviado como comentário automático logo após a
+                O Reddit não permite link e texto na mesma publicação. O texto
+                pode ser enviado como comentário automático logo após a
                 publicação.
               </p>
               <label className="mt-2.5 flex items-center gap-2 text-sm text-claro">
@@ -255,26 +322,29 @@ export function NewPostForm({
           )}
 
           <div className="grid gap-4 sm:grid-cols-2">
-            <div>
-              <label htmlFor="flairId" className={label}>
-                Flair
-              </label>
-              <select id="flairId" name="flairId" className={field}>
-                <option value="">Sem flair</option>
-                {flairs
-                  .filter((f) => !f.modOnly)
-                  .map((f) => (
-                    <option key={f.id} value={f.id}>
-                      {f.text}
-                    </option>
-                  ))}
-              </select>
-              {flairErro && (
-                <p className="mt-1.5 text-xs text-rosa" role="alert">
-                  {flairErro}
-                </p>
-              )}
-            </div>
+            {/* Flair exige a Data API: fica fora do caminho Devvit. */}
+            {!viaDevvit && (
+              <div>
+                <label htmlFor="flairId" className={label}>
+                  Flair
+                </label>
+                <select id="flairId" name="flairId" className={field}>
+                  <option value="">Sem flair</option>
+                  {flairs
+                    .filter((f) => !f.modOnly)
+                    .map((f) => (
+                      <option key={f.id} value={f.id}>
+                        {f.text}
+                      </option>
+                    ))}
+                </select>
+                {flairErro && (
+                  <p className="mt-1.5 text-xs text-rosa" role="alert">
+                    {flairErro}
+                  </p>
+                )}
+              </div>
+            )}
 
             <div className="flex flex-wrap items-end gap-5 pb-2.5">
               <label className="flex items-center gap-2 text-sm text-claro">
@@ -338,7 +408,6 @@ export function NewPostForm({
             </div>
           </fieldset>
 
-          {/* Data e hora — só fazem sentido no modo programar */}
           {publishMode === 'schedule' && (
             <div className="anima-painel grid gap-4 sm:grid-cols-2">
               <div>
@@ -356,7 +425,6 @@ export function NewPostForm({
             </div>
           )}
 
-          {/* Horário que acontece duas vezes: o usuário escolhe qual */}
           {state.timeChoices && (
             <div className="anima-painel rounded-lg border border-areia/30 bg-areia/10 p-3.5">
               <p className="text-sm text-claro">
@@ -411,43 +479,47 @@ export function NewPostForm({
               />
             </div>
 
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div>
-                <label htmlFor="commentMode" className={label}>
-                  Quando comentar
-                </label>
-                <select
-                  id="commentMode"
-                  name="commentMode"
-                  className={field}
-                  value={commentMode}
-                  onChange={(e) => setCommentMode(e.target.value)}
-                >
-                  <option value="immediate">
-                    Imediatamente após a publicação
-                  </option>
-                  <option value="delay">Minutos depois da publicação</option>
-                  <option value="absolute">Em um horário específico</option>
-                </select>
-              </div>
-
-              {commentMode === 'delay' && (
+            {/* No caminho Devvit o comentário sai imediatamente após a
+                publicação — sem escolha de modo nesta fase. */}
+            {!viaDevvit && (
+              <div className="grid gap-4 sm:grid-cols-2">
                 <div>
-                  <label htmlFor="commentDelayMinutes" className={label}>
-                    Minutos após a publicação
+                  <label htmlFor="commentMode" className={label}>
+                    Quando comentar
                   </label>
-                  <input
-                    id="commentDelayMinutes"
-                    name="commentDelayMinutes"
-                    type="number"
-                    min={0}
+                  <select
+                    id="commentMode"
+                    name="commentMode"
                     className={field}
-                  />
+                    value={commentMode}
+                    onChange={(e) => setCommentMode(e.target.value)}
+                  >
+                    <option value="immediate">
+                      Imediatamente após a publicação
+                    </option>
+                    <option value="delay">Minutos depois da publicação</option>
+                    <option value="absolute">Em um horário específico</option>
+                  </select>
                 </div>
-              )}
-            </div>
 
-            {commentMode === 'absolute' && (
+                {commentMode === 'delay' && (
+                  <div>
+                    <label htmlFor="commentDelayMinutes" className={label}>
+                      Minutos após a publicação
+                    </label>
+                    <input
+                      id="commentDelayMinutes"
+                      name="commentDelayMinutes"
+                      type="number"
+                      min={0}
+                      className={field}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+
+            {!viaDevvit && commentMode === 'absolute' && (
               <div className="grid gap-4 sm:grid-cols-2">
                 <div>
                   <label htmlFor="commentDate" className={label}>
@@ -475,8 +547,9 @@ export function NewPostForm({
             )}
 
             <p className="text-xs text-fraco">
-              O comentário só é enviado depois que a publicação for concluída
-              com sucesso, sempre pela mesma conta.
+              {viaDevvit
+                ? 'O comentário é enviado imediatamente após a publicação, pelo App Devvit.'
+                : 'O comentário só é enviado depois que a publicação for concluída com sucesso, sempre pela mesma conta.'}
             </p>
           </div>
         )}

@@ -22,12 +22,13 @@ export default async function NewPostPage() {
     .eq('status', 'active')
     .order('name')
 
-  // Comunidades com instalação Devvit ativa: nelas a publicação sai pelo App
-  // Devvit, automaticamente — o formulário só informa, não deixa escolher.
+  // Destinos Devvit: instalações ativas do usuário (RLS). O formulário envia
+  // só o id; publisher e subreddit são derivados no servidor.
   const { data: instalacoes } = await supabase
     .from('devvit_installations')
-    .select('subreddit_name')
+    .select('id, subreddit_name')
     .eq('status', 'active')
+    .order('subreddit_name')
 
   return (
     <div className="anima-entrada max-w-3xl">
@@ -36,15 +37,19 @@ export default async function NewPostPage() {
         Agende uma publicação em uma das comunidades que você modera.
       </p>
 
-      {(contas ?? []).length === 0 ? (
+      {(contas ?? []).length === 0 && (instalacoes ?? []).length === 0 ? (
         <div className={`${estadoVazio} mt-6`}>
-          Conecte uma conta Reddit e sincronize as comunidades antes de agendar.
+          Conecte uma conta Reddit ou registre uma instalação do App Devvit
+          antes de agendar.
         </div>
       ) : (
         <NewPostForm
           accounts={contas ?? []}
           communities={comunidades ?? []}
-          devvitCommunities={(instalacoes ?? []).map((i) => i.subreddit_name)}
+          devvitDestinations={(instalacoes ?? []).map((i) => ({
+            id: i.id,
+            subredditName: i.subreddit_name,
+          }))}
         />
       )}
     </div>

@@ -6,7 +6,6 @@ import { createServerSupabase } from '@/lib/supabase/server'
 import { createAdminSupabase } from '@/lib/supabase/admin'
 import { getRedditClient } from '@/lib/reddit/reddit-client-factory'
 import { getPostRequirements } from '@/lib/reddit/requirements'
-import { getDevvitPublisher } from '@/lib/publishing/factory'
 import { buildPayload, PayloadError } from './payload-builder'
 import { toUtc } from './timezone'
 import type { NewPostInput } from '@/app/(dashboard)/dashboard/new/schema'
@@ -53,17 +52,9 @@ export async function createPost(
     throw new SubredditMismatchError()
   }
 
-  // --- mecanismo de publicação ---
-  // Decisão automática do backend, nunca do formulário: se a comunidade tem
-  // uma instalação Devvit ativa deste usuário, a publicação sai pelo Devvit
-  // (como conta do app). A RLS restringe a consulta às instalações do próprio
-  // usuário, e a RPC revalida a correspondência antes de gravar.
-  const { data: instalacao } = await supabase
-    .from('devvit_installations')
-    .select('id, app_slug, install_location_id, subreddit_name')
-    .eq('subreddit_name', subreddit.name.toLowerCase())
-    .eq('status', 'active')
-    .maybeSingle()
+  // Este caminho é SEMPRE publisher='worker'. O destino Devvit tem fluxo
+  // próprio (createDevvitPost), com formulário tipado — o navegador nunca
+  // escolhe publisher, e este arquivo permanece o legacy intacto.
 
   // --- horário ---
   // toUtc lança em horário inexistente e em ambíguo sem escolha explícita.
@@ -151,9 +142,6 @@ export async function createPost(
       scheduled_at: quando.toISOString(),
       timezone: input.timeZone,
       status: 'scheduled',
-      ...(instalacao
-        ? { publisher: 'devvit', devvit_installation_id: instalacao.id }
-        : {}),
     },
     p_comment: comentario,
   })
@@ -162,51 +150,7 @@ export async function createPost(
     throw error ?? new Error('Falha ao gravar a publicação.')
   }
 
-  const postId = data as string
-
-  // --- sincronização com o Devvit ---
-  // O registro já está salvo com devvit_sync_status = 'pending'. A falha da
-  // ponte NUNCA vira fallback para o worker (os claims filtram publisher) e
-  // NUNCA desfaz a gravação: o post fica visível aguardando sincronização.
-  if (instalacao) {
-    const resultado = await getDevvitPublisher().schedule({
-      postId,
-      subredditName: instalacao.subreddit_name,
-      appSlug: instalacao.app_slug,
-      installLocationId: instalacao.install_location_id,
-      title: payload.title,
-      kind: payload.postKind,
-      url: payload.url ?? undefined,
-      body: payload.body ?? undefined,
-      commentBody: corpoComentario ?? undefined,
-      flairId: payload.flairId ?? undefined,
-      nsfw: payload.nsfw,
-      spoiler: payload.spoiler,
-      runAtUtc: quando.toISOString(),
-    })
-
-    if (resultado.ok) {
-      await admin
-        .from('scheduled_posts')
-        .update({
-          devvit_job_id: resultado.devvitJobId,
-          devvit_sync_status: 'accepted',
-        })
-        .eq('id', postId)
-    } else if (resultado.code !== 'unavailable') {
-      // 'unavailable' fica em 'pending': é ausência de ponte, não uma falha
-      // deste registro. Recusa ou erro de rede ficam registrados para a UI.
-      await admin
-        .from('scheduled_posts')
-        .update({
-          devvit_sync_status: 'failed',
-          devvit_sync_error: resultado.message,
-        })
-        .eq('id', postId)
-    }
-  }
-
-  return { postId }
+  return { postId: data as string }
 }
 
 export { PayloadError }

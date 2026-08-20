@@ -2,10 +2,10 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { adminClient, cleanupTestUsers, createTestUser } from './helpers'
 
 // ---------------------------------------------------------------
-// O caminho do formulário, de ponta a ponta, contra o banco real:
-// schema -> createPost -> RPC -> scheduled_posts. Só a identidade da sessão
-// e o HTTP do Reddit são substituídos — a decisão automática de publisher, a
-// RPC e os claims rodam de verdade.
+// O caminho Devvit de ponta a ponta, contra o banco real, SEM NENHUMA
+// credencial REDDIT_* no ambiente e SEM conta Reddit ou subreddit no banco.
+// Só a identidade da sessão e o cookie-store do Next são substituídos — a
+// decisão de destino, a RPC, as constraints e os claims rodam de verdade.
 // ---------------------------------------------------------------
 
 const estado = vi.hoisted(() => ({
@@ -18,51 +18,35 @@ vi.mock('@/lib/auth/require-user', () => ({
   UnauthenticatedError: class UnauthenticatedError extends Error {},
 }))
 
-vi.mock('@/lib/auth/ownership', () => ({
-  assertAccountAccess: async (id: string) => ({ id }),
-  ForbiddenError: class ForbiddenError extends Error {},
-}))
-
 vi.mock('@/lib/supabase/server', async () => {
-  const { userClient: clienteDoUsuario } = await import('./helpers')
+  const { userClient } = await import('./helpers')
   return {
-    createServerSupabase: async () => clienteDoUsuario(estado.accessToken),
+    createServerSupabase: async () => userClient(estado.accessToken),
   }
 })
 
-vi.mock('@/lib/reddit/reddit-client-factory', () => ({
-  getRedditClient: async () => ({}),
-}))
-
-vi.mock('@/lib/reddit/requirements', async (importOriginal) => {
-  const original =
-    await importOriginal<typeof import('@/lib/reddit/requirements')>()
-  return {
-    ...original,
-    getPostRequirements: async () => original.FIELD_DEFAULTS,
-  }
-})
-
-import { newPostSchema } from '@/app/(dashboard)/dashboard/new/schema'
-import { createPost } from '@/lib/scheduling/create-post'
+import { newDevvitPostSchema, newPostSchema } from '@/app/(dashboard)/dashboard/new/schema'
+import {
+  createDevvitPost,
+  DevvitInstallationError,
+} from '@/lib/scheduling/create-devvit-post'
 import { rotuloDevvit } from '@/lib/scheduling/status'
 
 const SUB_NAME = 'famosinha_br'
 
 let userA: { id: string; accessToken: string }
-let conta: string
-let sub: string
+let userB: { id: string; accessToken: string }
 let instalacao: string
+let instalacaoDeB: string
 
-/** O mesmo objeto que o formulário envia, passado pelo mesmo schema. */
+/** O mesmo objeto que o formulário Devvit envia, pelo mesmo schema. */
 function inputDoFormulario(overrides: Record<string, string> = {}) {
-  return newPostSchema.parse({
-    accountId: conta,
-    subredditId: sub,
-    title: 'Validação do caminho Devvit',
+  return newDevvitPostSchema.parse({
+    devvitInstallationId: instalacao,
+    title: 'Validação do caminho Devvit sem Data API',
     url: 'https://exemplo.com/validacao',
-    body: '',
-    flairId: '',
+    body: 'texto que vira primeiro comentário',
+    allowCommentFallback: 'on',
     date: '',
     time: '',
     timeZone: 'America/Sao_Paulo',
@@ -71,48 +55,28 @@ function inputDoFormulario(overrides: Record<string, string> = {}) {
     publishMode: 'now',
     occurrence: '',
     commentBody: '',
-    commentMode: 'immediate',
-    commentDelayMinutes: '',
-    commentDate: '',
-    commentTime: '',
     ...overrides,
   })
 }
 
 beforeAll(async () => {
+  // A prova central: NENHUMA credencial do Reddit existe no ambiente. Se
+  // qualquer trecho do caminho Devvit carregar o redditSchema, o teste quebra
+  // com o erro de env — e é exatamente o que queremos detectar.
+  delete process.env.REDDIT_CLIENT_ID
+  delete process.env.REDDIT_CLIENT_SECRET
+  delete process.env.REDDIT_REDIRECT_URI
+  delete process.env.REDDIT_USER_AGENT
+
   const stamp = Date.now()
-  userA = await createTestUser(`cpd-${stamp}@teste.local`)
+  userA = await createTestUser(`cdp-${stamp}@teste.local`)
+  userB = await createTestUser(`cdp-b-${stamp}@teste.local`)
   estado.ownerId = userA.id
   estado.accessToken = userA.accessToken
 
-  const { data: c } = await adminClient()
-    .from('reddit_accounts')
-    .insert({
-      owner_id: userA.id,
-      reddit_user_id: `t2_cpd_${stamp}`,
-      username: 'conta_cpd',
-      min_interval_seconds: 0,
-    })
-    .select('id')
-    .single()
-  conta = c!.id as string
-
-  const { data: s } = await adminClient()
-    .from('subreddits')
-    .insert({
-      owner_id: userA.id,
-      reddit_account_id: conta,
-      subreddit_fullname: `t5_cpd_${stamp}`,
-      name: SUB_NAME,
-      display_name: 'Famosinha BR',
-      url: `/r/${SUB_NAME}/`,
-    })
-    .select('id')
-    .single()
-  sub = s!.id as string
-
-  // Os identificadores reais da instalação de r/Famosinha_BR, capturados do
-  // contexto oficial do Devvit (context.subredditId) em 2026-08-20.
+  // Identificadores reais da instalação de r/Famosinha_BR (context.subredditId).
+  // De propósito, NÃO criamos reddit_accounts nem subreddits: o caminho Devvit
+  // não pode depender deles.
   const { data: i, error } = await adminClient()
     .from('devvit_installations')
     .insert({
@@ -125,20 +89,41 @@ beforeAll(async () => {
     .single()
   if (error) throw error
   instalacao = i!.id as string
+
+  const { data: ib } = await adminClient()
+    .from('devvit_installations')
+    .insert({
+      owner_id: userB.id,
+      subreddit_name: SUB_NAME,
+      app_slug: 'grapepos2',
+    })
+    .select('id')
+    .single()
+  instalacaoDeB = ib!.id as string
 })
 
 afterAll(async () => {
-  await cleanupTestUsers([userA.id])
+  // A FK protege instalações com histórico; o cascade do usuário remove tudo.
+  await cleanupTestUsers([userA.id, userB.id])
 })
 
-describe('formulário -> createPost com instalação Devvit ativa', () => {
-  it('classifica automaticamente como devvit, com instalação e sync pending', async () => {
-    const { postId } = await createPost(inputDoFormulario())
+describe('fluxo Devvit sem REDDIT_* e sem conta Reddit', () => {
+  it('as credenciais Reddit realmente não existem no ambiente', () => {
+    expect(process.env.REDDIT_CLIENT_ID).toBeUndefined()
+    expect(process.env.REDDIT_CLIENT_SECRET).toBeUndefined()
+    expect(process.env.REDDIT_REDIRECT_URI).toBeUndefined()
+    expect(process.env.REDDIT_USER_AGENT).toBeUndefined()
+  })
+
+  it('cria o agendamento completo: post sem conta/comunidade + comentário sem conta', async () => {
+    const { postId } = await createDevvitPost(inputDoFormulario())
 
     const { data: linha } = await adminClient()
       .from('scheduled_posts')
       .select(
-        'publisher, devvit_installation_id, devvit_sync_status, devvit_job_id, devvit_sync_error, status',
+        `publisher, devvit_installation_id, devvit_sync_status, devvit_job_id,
+         devvit_sync_error, status, reddit_account_id, subreddit_id,
+         post_kind, url, body`,
       )
       .eq('id', postId)
       .single()
@@ -146,72 +131,139 @@ describe('formulário -> createPost com instalação Devvit ativa', () => {
     expect(linha!.publisher).toBe('devvit')
     expect(linha!.devvit_installation_id).toBe(instalacao)
     expect(linha!.devvit_sync_status).toBe('pending')
-    // A ponte está indisponível: nenhum job foi criado e nenhum erro foi
-    // inventado — o registro apenas aguarda.
     expect(linha!.devvit_job_id).toBeNull()
     expect(linha!.devvit_sync_error).toBeNull()
     expect(linha!.status).toBe('scheduled')
+    expect(linha!.reddit_account_id).toBeNull()
+    expect(linha!.subreddit_id).toBeNull()
+    // link + texto confirmado → o texto vira comentário, não body.
+    expect(linha!.post_kind).toBe('link')
+    expect(linha!.body).toBeNull()
+
+    const { data: comentario } = await adminClient()
+      .from('scheduled_comments')
+      .select('reddit_account_id, mode, body, status')
+      .eq('scheduled_post_id', postId)
+      .single()
+    expect(comentario!.reddit_account_id).toBeNull()
+    expect(comentario!.mode).toBe('immediate')
+    expect(comentario!.body).toBe('texto que vira primeiro comentário')
   })
 
   it('a fila mostra "Aguardando sincronização" para esse registro', () => {
-    // O rótulo é função pura dos campos que a página da fila seleciona.
     expect(rotuloDevvit('scheduled', 'devvit', 'pending')).toBe(
       'Aguardando sincronização',
     )
   })
 
-  it('o worker NÃO reivindica o post devvit, mesmo vencido — sem fallback', async () => {
-    const { postId } = await createPost(inputDoFormulario())
+  it('o worker NÃO reivindica o post devvit vencido, nem seu comentário', async () => {
+    const { postId } = await createDevvitPost(inputDoFormulario())
 
-    // O mesmo claim que o worker roda em produção.
-    const { data: pegos, error } = await adminClient().rpc('claim_due_posts', {
+    const { data: pegos } = await adminClient().rpc('claim_due_posts', {
       p_worker_id: 'worker-validacao',
       p_batch: 50,
     })
-    expect(error).toBeNull()
     expect((pegos ?? []).map((r: { id: string }) => r.id)).not.toContain(
       postId,
     )
 
+    const { data: comentarios } = await adminClient().rpc(
+      'claim_due_comments',
+      { p_worker_id: 'worker-validacao', p_batch: 50 },
+    )
+    const idsComentarios = ((comentarios ?? []) as { scheduled_post_id: string }[])
+      .map((c) => c.scheduled_post_id)
+    expect(idsComentarios).not.toContain(postId)
+
     const { data: linha } = await adminClient()
       .from('scheduled_posts')
-      .select('status, locked_by, locked_at, submit_attempted_at, publisher')
+      .select('status, locked_by, locked_at, submit_attempted_at')
       .eq('id', postId)
       .single()
     expect(linha!.status).toBe('scheduled')
     expect(linha!.locked_by).toBeNull()
     expect(linha!.locked_at).toBeNull()
-    // Nenhuma tentativa de envio: o caminho da Reddit Data API nunca começou.
     expect(linha!.submit_attempted_at).toBeNull()
-    expect(linha!.publisher).toBe('devvit')
   })
-})
 
-describe('teste negativo: instalação desativada', () => {
-  it('novo agendamento NÃO é classificado como devvit', async () => {
+  it('rejeita instalação desativada', async () => {
     await adminClient()
       .from('devvit_installations')
       .update({ status: 'disabled' })
       .eq('id', instalacao)
-
     try {
-      const { postId } = await createPost(
-        inputDoFormulario({ title: 'Com instalação desativada' }),
+      await expect(createDevvitPost(inputDoFormulario())).rejects.toThrow(
+        DevvitInstallationError,
       )
-
-      const { data: linha } = await adminClient()
-        .from('scheduled_posts')
-        .select('publisher, devvit_installation_id, devvit_sync_status')
-        .eq('id', postId)
-        .single()
-      expect(linha!.publisher).toBe('worker')
-      expect(linha!.devvit_installation_id).toBeNull()
-      expect(linha!.devvit_sync_status).toBeNull()
     } finally {
       await adminClient()
         .from('devvit_installations')
         .update({ status: 'active' })
         .eq('id', instalacao)
     }
+  })
+
+  it('rejeita instalação de outro owner (a RLS nem a enxerga)', async () => {
+    await expect(
+      createDevvitPost(
+        inputDoFormulario({ devvitInstallationId: instalacaoDeB }),
+      ),
+    ).rejects.toThrow(DevvitInstallationError)
+  })
+
+  it('rejeita id de instalação inexistente', async () => {
+    await expect(
+      createDevvitPost(
+        inputDoFormulario({
+          devvitInstallationId: '00000000-0000-0000-0000-000000000000',
+        }),
+      ),
+    ).rejects.toThrow(DevvitInstallationError)
+  })
+})
+
+describe('o navegador não escolhe publisher nem owner', () => {
+  it('o schema Devvit descarta publisher, owner e subreddit enviados', () => {
+    const parsed = newDevvitPostSchema.parse({
+      devvitInstallationId: instalacao,
+      publisher: 'worker',
+      owner_id: '3f2504e0-4f89-11d3-9a0c-0305e82c3301',
+      subredditName: 'outra_comunidade',
+      title: 'Título',
+      url: 'https://exemplo.com/x',
+      body: '',
+      date: '',
+      time: '',
+      timeZone: 'America/Sao_Paulo',
+      publishMode: 'now',
+      occurrence: '',
+      commentBody: '',
+    })
+    expect(Object.keys(parsed)).not.toContain('publisher')
+    expect(Object.keys(parsed)).not.toContain('owner_id')
+    expect(Object.keys(parsed)).not.toContain('subredditName')
+  })
+
+  it('o schema legacy também não aceita publisher', () => {
+    const parsed = newPostSchema.parse({
+      publisher: 'devvit',
+      accountId: '3f2504e0-4f89-11d3-9a0c-0305e82c3302',
+      subredditId: '3f2504e0-4f89-11d3-9a0c-0305e82c3303',
+      title: 'Título',
+      url: 'https://exemplo.com/x',
+      body: '',
+      flairId: '',
+      date: '',
+      time: '',
+      timeZone: 'America/Sao_Paulo',
+      publishMode: 'now',
+      occurrence: '',
+      commentBody: '',
+      commentMode: 'immediate',
+      commentDelayMinutes: '',
+      commentDate: '',
+      commentTime: '',
+    })
+    expect(Object.keys(parsed)).not.toContain('publisher')
   })
 })

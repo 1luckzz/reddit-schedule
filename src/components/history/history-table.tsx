@@ -18,6 +18,7 @@ export type HistoryRow = {
   publisher: string | null
   reddit_accounts: { username: string } | null
   subreddits: { name: string } | null
+  devvit_installations: { subreddit_name: string } | null
   scheduled_comments: { status: string }[] | null
 }
 
@@ -82,7 +83,10 @@ export function HistoryTable({
                 {item.publisher === 'devvit'
                   ? 'App Devvit'
                   : `u/${item.reddit_accounts?.username ?? '—'}`}{' '}
-                → r/{item.subreddits?.name ?? '—'}
+                → r/
+                {item.subreddits?.name ??
+                  item.devvit_installations?.subreddit_name ??
+                  '—'}
               </td>
               <td className="max-w-xs px-4 py-3 text-claro">
                 <span className="block truncate">{item.title}</span>
