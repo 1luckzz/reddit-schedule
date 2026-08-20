@@ -32,9 +32,12 @@ const secao = 'text-sm font-medium text-claro'
 export function NewPostForm({
   accounts,
   communities,
+  devvitCommunities = [],
 }: {
   accounts: Account[]
   communities: Community[]
+  /** Nomes (minúsculos) das comunidades com instalação Devvit ativa. */
+  devvitCommunities?: string[]
 }) {
   const [state, action, pending] = useActionState(createScheduledPost, initial)
 
@@ -98,6 +101,13 @@ export function NewPostForm({
 
   const precisaComentario = url.trim() !== '' && body.trim() !== ''
 
+  const comunidadeEscolhida = doAccount.find((c) => c.id === subredditId)
+  const viaDevvit = Boolean(
+    comunidadeEscolhida &&
+      devvitCommunities.includes(comunidadeEscolhida.name.toLowerCase()),
+  )
+  const contaEscolhida = accounts.find((a) => a.id === accountId)
+
   return (
     <form action={action} className="mt-8 space-y-8">
       {/* ---------------- Destino ---------------- */}
@@ -150,6 +160,37 @@ export function NewPostForm({
             )}
           </div>
         </div>
+
+        {/*
+          A identidade de publicação é decidida pelo backend, nunca aqui: o
+          formulário apenas informa qual caminho esta comunidade usa. No
+          caminho Devvit quem publica é o app (runAs APP), não a conta — a
+          conta selecionada segue validando a comunidade e os flairs.
+        */}
+        {comunidadeEscolhida && (
+          <div className="anima-painel mt-4 rounded-lg border border-traco bg-white/[0.03] p-3.5 text-sm">
+            {viaDevvit ? (
+              <>
+                <p className="text-claro">
+                  Publicador: <span className="font-medium">App Devvit</span>
+                </p>
+                <p className="mt-0.5 text-claro">
+                  Será publicado em r/{comunidadeEscolhida.name}
+                </p>
+                <p className="mt-1.5 text-xs text-fraco">
+                  A publicação será feita pelo aplicativo instalado na
+                  comunidade, não pela conta u/
+                  {contaEscolhida?.username ?? '—'}.
+                </p>
+              </>
+            ) : (
+              <p className="text-claro">
+                Será publicado em r/{comunidadeEscolhida.name} por u/
+                {contaEscolhida?.username ?? '—'}
+              </p>
+            )}
+          </div>
+        )}
       </section>
 
       {/* ---------------- Conteúdo ---------------- */}

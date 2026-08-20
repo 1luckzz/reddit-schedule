@@ -15,8 +15,10 @@ export type HistoryRow = {
   retry_count: number
   resolved_by: string | null
   resolved_at: string | null
+  publisher: string | null
   reddit_accounts: { username: string } | null
   subreddits: { name: string } | null
+  scheduled_comments: { status: string }[] | null
 }
 
 /**
@@ -77,8 +79,10 @@ export function HistoryTable({
                 {local(item.published_at) ?? '—'}
               </td>
               <td className="whitespace-nowrap px-4 py-3 text-[13px] text-fraco">
-                u/{item.reddit_accounts?.username ?? '—'} → r/
-                {item.subreddits?.name ?? '—'}
+                {item.publisher === 'devvit'
+                  ? 'App Devvit'
+                  : `u/${item.reddit_accounts?.username ?? '—'}`}{' '}
+                → r/{item.subreddits?.name ?? '—'}
               </td>
               <td className="max-w-xs px-4 py-3 text-claro">
                 <span className="block truncate">{item.title}</span>
@@ -107,6 +111,18 @@ export function HistoryTable({
                     {item.retry_count} tentativa(s)
                   </span>
                 )}
+                {/*
+                  A falha do comentário nunca muda o estado do post — o post
+                  está publicado de fato. Ela aparece como informação anexa.
+                */}
+                {item.status === 'published' &&
+                  (item.scheduled_comments ?? []).some(
+                    (c) => c.status === 'failed',
+                  ) && (
+                    <span className="ml-1.5 text-xs text-rosa/90">
+                      Comentário falhou
+                    </span>
+                  )}
               </td>
               <td className="whitespace-nowrap px-4 py-3">
                 {item.reddit_permalink ? (

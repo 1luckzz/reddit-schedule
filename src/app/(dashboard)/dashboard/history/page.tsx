@@ -49,9 +49,10 @@ export default async function HistoryPage({
     .select(
       `id, title, status, scheduled_at, timezone, published_at,
        reddit_post_id, reddit_permalink, error_message, retry_count,
-       resolved_by, resolved_at,
+       resolved_by, resolved_at, publisher,
        reddit_accounts ( username ),
-       subreddits!scheduled_posts_subreddit_id_owner_id_fkey ( name )`,
+       subreddits!scheduled_posts_subreddit_id_owner_id_fkey ( name ),
+       scheduled_comments ( status )`,
     )
     .order('scheduled_at', { ascending: false })
 

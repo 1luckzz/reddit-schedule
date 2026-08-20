@@ -14,6 +14,8 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // Artefatos gerados pelo Supabase CLI ao subir o stack local.
     "supabase/.temp/**",
+    // O app Devvit tem toolchain próprio (tsconfig e eslint dentro da pasta).
+    "grapepos/**",
   ]),
 ]);
 

@@ -55,6 +55,28 @@ export function rotuloStatus(status: string): string {
   return ROTULOS[status as PostStatus] ?? status
 }
 
+/**
+ * Rótulo derivado do caminho Devvit, quando ele diz mais que o status puro.
+ *
+ * Não há estados novos na máquina: um post devvit continua `scheduled` até o
+ * Devvit publicar. O que muda é o que o usuário precisa saber enquanto isso —
+ * se o job já chegou ao Devvit ou ainda aguarda a ponte. Nos demais estados
+ * (`processing`, `published`, `failed`…), o rótulo padrão já conta a história.
+ */
+export function rotuloDevvit(
+  status: string,
+  publisher: string | null | undefined,
+  syncStatus: string | null | undefined,
+): string | null {
+  if (publisher !== 'devvit' || status !== 'scheduled') return null
+  if (syncStatus === 'pending') return 'Aguardando sincronização'
+  if (syncStatus === 'sent' || syncStatus === 'accepted') {
+    return 'Enviado ao Devvit'
+  }
+  if (syncStatus === 'failed') return 'Falha de sincronização'
+  return null
+}
+
 export function corStatus(status: string): string {
   return CORES[status as PostStatus] ?? CORES.draft
 }

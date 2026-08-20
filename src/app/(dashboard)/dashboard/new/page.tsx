@@ -22,6 +22,13 @@ export default async function NewPostPage() {
     .eq('status', 'active')
     .order('name')
 
+  // Comunidades com instalação Devvit ativa: nelas a publicação sai pelo App
+  // Devvit, automaticamente — o formulário só informa, não deixa escolher.
+  const { data: instalacoes } = await supabase
+    .from('devvit_installations')
+    .select('subreddit_name')
+    .eq('status', 'active')
+
   return (
     <div className="anima-entrada max-w-3xl">
       <h1 className={tituloPagina}>Nova publicação</h1>
@@ -37,6 +44,7 @@ export default async function NewPostPage() {
         <NewPostForm
           accounts={contas ?? []}
           communities={comunidades ?? []}
+          devvitCommunities={(instalacoes ?? []).map((i) => i.subreddit_name)}
         />
       )}
     </div>

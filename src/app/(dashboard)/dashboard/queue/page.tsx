@@ -49,6 +49,7 @@ export default async function QueuePage({
     .select(
       `id, title, status, scheduled_at, timezone, post_kind, url,
        error_message, retry_count, next_attempt_at,
+       publisher, devvit_sync_status, devvit_sync_error,
        reddit_account_id, subreddit_id,
        reddit_accounts ( username ),
        subreddits!scheduled_posts_subreddit_id_owner_id_fkey ( name )`,

@@ -14,7 +14,7 @@ import {
   modulo,
   rotuloCampo,
 } from '@/components/ui/estilo'
-import { podeEditar } from '@/lib/scheduling/status'
+import { podeEditar, rotuloDevvit } from '@/lib/scheduling/status'
 import { fromUtc, SUPPORTED_TIME_ZONES } from '@/lib/scheduling/timezone'
 
 export type QueueRow = {
@@ -28,6 +28,9 @@ export type QueueRow = {
   error_message: string | null
   retry_count: number
   next_attempt_at: string | null
+  publisher: string | null
+  devvit_sync_status: string | null
+  devvit_sync_error: string | null
   reddit_accounts: { username: string } | null
   subreddits: { name: string } | null
 }
@@ -101,17 +104,34 @@ function QueueLinha({
           </span>
         </td>
         <td className="whitespace-nowrap px-4 py-3 text-xs text-medio">
-          u/{item.reddit_accounts?.username ?? '—'} → r/
-          {item.subreddits?.name ?? '—'}
+          {/* No caminho Devvit a identidade que publica é o app, não a conta. */}
+          {item.publisher === 'devvit'
+            ? 'App Devvit'
+            : `u/${item.reddit_accounts?.username ?? '—'}`}{' '}
+          → r/{item.subreddits?.name ?? '—'}
         </td>
         <td className="max-w-xs truncate px-4 py-3 text-claro">
           {item.title}
         </td>
         <td className="whitespace-nowrap px-4 py-3">
-          <StatusChip status={item.status} />
+          <StatusChip
+            status={item.status}
+            rotulo={
+              rotuloDevvit(
+                item.status,
+                item.publisher,
+                item.devvit_sync_status,
+              ) ?? undefined
+            }
+          />
           {item.retry_count > 0 && (
             <span className="ml-1.5 text-xs tabular-nums text-fraco">
               {item.retry_count} tentativa(s)
+            </span>
+          )}
+          {item.devvit_sync_status === 'failed' && item.devvit_sync_error && (
+            <span className="ml-1.5 text-xs text-rosa/90">
+              {item.devvit_sync_error}
             </span>
           )}
         </td>

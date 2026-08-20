@@ -24,6 +24,9 @@
 .DS_Store
 *.pem
 
+# app Devvit: repositório git próprio, deploy via devvit CLI
+/grapepos/
+
 # debug
 npm-debug.log*
 yarn-debug.log*
